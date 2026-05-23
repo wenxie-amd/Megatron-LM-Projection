@@ -1,0 +1,40 @@
+{
+  "scenario": "llama3.1_8B default workload, TP=1 PP=1 DP=1, BF16, distributed optimizer (fp32 grad accumulation)",
+  "model": "llama3.1_8B",
+  "parallel": {
+    "precision": "bf16",
+    "tensor_model_parallel_size": 1,
+    "pipeline_model_parallel_size": 1,
+    "data_parallel_size": 1,
+    "context_parallel_size": 1,
+    "sequence_parallel": false,
+    "optimizer_kind": "distributed_optimizer"
+  },
+  "workload": {
+    "seq_length": 8192,
+    "micro_batch_size": 1,
+    "global_batch_size": 64,
+    "recompute_granularity": "none"
+  },
+  "expected": {
+    "param_count_total": 8030261248,
+    "param_breakdown": {
+      "embedding": 525336576,
+      "layer.input_norm": 131072,
+      "layer.attention": 1342177280,
+      "layer.pre_mlp_norm": 131072,
+      "layer.mlp": 5637144576,
+      "final_norm": 4096,
+      "output_projection": 525336576
+    },
+    "rank_0_memory_bytes": {
+      "param_bytes": 16060522496,
+      "activation_bytes": 40877752320,
+      "optimizer_grad_buffer_bytes": 32121044992,
+      "optimizer_main_param_bytes": 32121044992,
+      "optimizer_state_bytes": 64242089984,
+      "total_bytes": 185422454784
+    }
+  },
+  "source": "Hand-derived from Megatron's theoretical_memory_usage.py. With BF16 + distributed optimizer (fp32 grad accumulation, dp=1): 6 + 12/dp = 18 bytes/param = 144 GB for 8.03B params; matches param(16G) + grad_buffer(32G) + main_param(32G) + state(64G). Activations follow compute_activation_memory_without_sp."
+}

@@ -1,0 +1,39 @@
+{
+  "scenario": "deepseek_v2_lite default workload, TP=1 PP=1 DP=1 EP=1, BF16",
+  "model": "deepseek_v2_lite",
+  "parallel": {
+    "precision": "bf16",
+    "tensor_model_parallel_size": 1,
+    "pipeline_model_parallel_size": 1,
+    "data_parallel_size": 1,
+    "context_parallel_size": 1,
+    "expert_model_parallel_size": 1,
+    "sequence_parallel": false,
+    "optimizer_kind": "distributed_optimizer"
+  },
+  "workload": {
+    "seq_length": 4096,
+    "micro_batch_size": 1,
+    "global_batch_size": 64,
+    "recompute_granularity": "none"
+  },
+  "expected": {
+    "param_count_total": 15706484224,
+    "param_breakdown": {
+      "embedding": 209715200,
+      "layer.input_norm": 2048,
+      "layer.attention": 13763072,
+      "layer.pre_mlp_norm": 2048,
+      "layer.mlp": 67239936,
+      "moe_layer.input_norm": 53248,
+      "moe_layer.attention": 357839872,
+      "moe_layer.pre_mlp_norm": 53248,
+      "moe_layer.moe": 14848098304,
+      "final_norm": 2048,
+      "output_projection": 209715200
+    },
+    "per_routed_expert_params": 8650752,
+    "per_moe_layer_block_params": 571080704
+  },
+  "source": "hand-derived from DeepSeek-V2-Lite HF config; MLA + MoE param formulas mirror megatron.core. Replaceable by tools/gen_fixtures.py output."
+}

@@ -1,0 +1,6 @@
+name: Rubin
+vendor: nvidia
+memory_gb: 288
+bf16_tflops: 5000
+fp8_tflops: 10000
+bandwidth_gbps: 13000

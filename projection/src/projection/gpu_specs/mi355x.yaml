@@ -1,0 +1,6 @@
+name: MI355X
+vendor: amd
+memory_gb: 288
+bf16_tflops: 2520
+fp8_tflops: 5040
+bandwidth_gbps: 8000

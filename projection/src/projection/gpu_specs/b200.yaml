@@ -1,0 +1,6 @@
+name: B200
+vendor: nvidia
+memory_gb: 192
+bf16_tflops: 2250
+fp8_tflops: 4500
+bandwidth_gbps: 8000

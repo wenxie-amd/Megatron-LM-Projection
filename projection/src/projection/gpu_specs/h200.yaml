@@ -1,0 +1,6 @@
+name: H200
+vendor: nvidia
+memory_gb: 141
+bf16_tflops: 989
+fp8_tflops: 1979
+bandwidth_gbps: 4800

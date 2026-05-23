@@ -1,0 +1,6 @@
+name: MI455X
+vendor: amd
+memory_gb: 432
+bf16_tflops: 5040
+fp8_tflops: 10080
+bandwidth_gbps: 13000

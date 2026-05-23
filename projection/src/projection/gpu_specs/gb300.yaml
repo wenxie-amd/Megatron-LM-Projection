@@ -1,0 +1,6 @@
+name: GB300
+vendor: nvidia
+memory_gb: 288
+bf16_tflops: 2500
+fp8_tflops: 5000
+bandwidth_gbps: 8000

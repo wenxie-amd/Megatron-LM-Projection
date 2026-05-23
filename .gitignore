@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+
+# Node / Vite (web/ has its own .gitignore but keep top-level safety net)
+node_modules/
+
+# Wheel artifact copied into web/public for Pyodide; rebuilt on every web build
+web/public/wheels/*.whl
+
+# OS / editors
+.DS_Store
+*.swp
+.vscode/
+.idea/

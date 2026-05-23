@@ -1,0 +1,6 @@
+name: MI325X
+vendor: amd
+memory_gb: 256
+bf16_tflops: 1307
+fp8_tflops: 2614
+bandwidth_gbps: 6000
