@@ -177,19 +177,12 @@ def validate_workload(model: ModelConfig, parallel: ParallelConfig, workload: Wo
             raise ValueError("recompute_granularity='full' requires recompute_method ('uniform' or 'block')")
         if workload.recompute_num_layers is None or workload.recompute_num_layers < 1:
             raise ValueError("recompute_granularity='full' requires recompute_num_layers >= 1")
-        # In ``block`` mode the multiplier per rank is ``num_chunks_per_rank``
-        # (= pp*vpp in direct mode, len(layout) in layout mode). ``uniform`` mode
-        # recomputes every layer regardless of recompute_num_layers.
-        if workload.recompute_method == "block":
-            per_chunk = workload.recompute_num_layers
-            chunks = num_chunks_per_rank(parallel)
-            layer_counts = layers_per_pp_stage(model, parallel)
-            max_rank_layers = max(layer_counts) if layer_counts else model.architecture.num_layers
-            if per_chunk * chunks > max_rank_layers:
-                raise ValueError(
-                    f"recompute_num_layers={per_chunk} * num_chunks_per_rank={chunks} = "
-                    f"{per_chunk * chunks} exceeds layers per PP rank = {max_rank_layers}"
-                )
+        # In ``block`` mode ``recompute_num_layers`` is recomputed per chunk
+        # (``num_chunks_per_rank = pp*vpp`` in direct mode, ``len(layout)`` in
+        # layout mode). If ``recompute_num_layers * num_chunks_per_rank``
+        # exceeds the number of layers on a rank, the activation memory model
+        # silently clamps to "recompute every layer on the rank" — same as
+        # ``method=uniform`` — so we deliberately *don't* reject that case.
 
 
 def validate_full_config(model: ModelConfig, parallel: ParallelConfig, workload: Workload) -> None:

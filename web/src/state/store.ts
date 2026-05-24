@@ -44,8 +44,11 @@ export interface ModelConfigView {
     qk_nope_head_dim?: number | null;
     qk_rope_head_dim?: number | null;
     v_head_dim?: number | null;
+    use_deepseek_v4?: boolean;
+    o_lora_rank?: number | null;
+    o_groups?: number;
   };
-  mlp: { swiglu: boolean; add_bias_linear: boolean };
+  mlp: { swiglu: boolean; add_bias_linear: boolean; swiglu_limit?: number };
   moe: {
     enabled: boolean;
     moe_ffn_hidden_size: number;
@@ -55,6 +58,8 @@ export interface ModelConfigView {
     moe_layer_freq: number;
     first_k_dense_replace: number;
     add_router_bias: boolean;
+    router_score_function?: "softmax" | "sigmoid" | "sqrtsoftplus";
+    num_hash_layers?: number;
   };
   norm: { normalization: "LayerNorm" | "RMSNorm"; layernorm_epsilon: number };
   position_embedding: {
@@ -62,6 +67,23 @@ export interface ModelConfigView {
     rotary_base: number;
     rotary_percent: number;
   };
+  hyper_connection?: {
+    hc_mult: number;
+    sinkhorn_iters: number;
+  };
+  mtp?: {
+    num_layers: number;
+    use_separate_hc_head: boolean;
+  };
+  hybrid_attention?: {
+    compress_ratios: number[];
+    index_topk: number;
+    index_head_dim: number;
+    index_n_heads: number;
+    attn_sliding_window: number;
+    attn_sink: boolean;
+    compress_rope_theta: number;
+  } | null;
 }
 
 export interface GpuSpecView {

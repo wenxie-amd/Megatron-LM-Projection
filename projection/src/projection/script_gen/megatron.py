@@ -101,7 +101,12 @@ def _collect_args(
         f"--position-embedding-type {model.position_embedding.position_embedding_type}",
     ]
 
-    if att.num_query_groups and att.num_query_groups != att.num_attention_heads and not att.use_mla:
+    if (
+        att.num_query_groups
+        and att.num_query_groups != att.num_attention_heads
+        and not att.use_mla
+        and not att.use_deepseek_v4
+    ):
         args.append("--group-query-attention")
         args.append(f"--num-query-groups {att.num_query_groups}")
     if att.kv_channels:
@@ -128,6 +133,47 @@ def _collect_args(
         args.append(f"--qk-head-dim {att.qk_nope_head_dim}")
         args.append(f"--qk-pos-emb-head-dim {att.qk_rope_head_dim}")
         args.append(f"--v-head-dim {att.v_head_dim}")
+
+    if att.use_deepseek_v4 and model.hybrid_attention is not None:
+        hyb = model.hybrid_attention
+        hc = model.hyper_connection
+        # DeepSeek-V4 specific flags. These are NOT present in upstream
+        # Megatron-LM today — they mirror the names used by Primus's V4 patch
+        # set (see third_party/Primus/primus/configs/models/megatron/
+        # deepseek_v4_base.yaml). The script is intended as a configuration
+        # blueprint, not a turnkey launch script for stock Megatron.
+        args.append("# ---------- DeepSeek-V4 hybrid attention ----------")
+        args.append("--hybrid-attention-enabled")
+        args.append("--use-deepseek-v4")
+        if att.q_lora_rank is not None:
+            args.append(f"--q-lora-rank {att.q_lora_rank}")
+        if att.o_lora_rank is not None:
+            args.append(f"--o-lora-rank {att.o_lora_rank}")
+        args.append(f"--o-groups {att.o_groups}")
+        ratios_str = ",".join(str(r) for r in hyb.compress_ratios)
+        args.append(f"--compress-ratios '[{ratios_str}]'")
+        args.append(f"--compress-rope-theta {int(hyb.compress_rope_theta)}")
+        if hyb.attn_sliding_window > 0:
+            args.append(f"--attn-sliding-window {hyb.attn_sliding_window}")
+        if hyb.attn_sink:
+            args.append("--attn-sink")
+        if hyb.index_topk > 0:
+            args.append(f"--index-topk {hyb.index_topk}")
+            args.append(f"--index-head-dim {hyb.index_head_dim}")
+            args.append(f"--index-n-heads {hyb.index_n_heads}")
+        if hc.enabled:
+            args.append(f"--hc-mult {hc.hc_mult}")
+            args.append(f"--hc-sinkhorn-iters {hc.sinkhorn_iters}")
+        if model.mtp.num_layers > 0:
+            args.append(f"--mtp-num-layers {model.mtp.num_layers}")
+            if model.mtp.use_separate_hc_head:
+                args.append("--mtp-use-separate-hc-head")
+        if model.moe.num_hash_layers > 0:
+            args.append(f"--num-hash-layers {model.moe.num_hash_layers}")
+        if model.moe.router_score_function != "softmax":
+            args.append(f"--moe-router-score-function {model.moe.router_score_function}")
+        if model.mlp.swiglu_limit > 0:
+            args.append(f"--swiglu-limit {model.mlp.swiglu_limit}")
 
     if model.moe.enabled:
         args.append(f"--num-experts {model.moe.num_routed_experts}")

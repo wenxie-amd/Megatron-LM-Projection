@@ -1,0 +1,85 @@
+name: deepseek-ai/DeepSeek-V4-Flash
+description: >-
+  DeepSeek-V4-Flash (284B total / 13B activated). Hybrid attention (per-layer
+  CSA / HCA / SWA via compress_ratios), single-latent KV (head_dim=512,
+  num_kv_heads=1), mHC residual (hc_mult=4, Sinkhorn-mixed), MoE with
+  sqrtsoftplus routing + first 3 layers using tid2eid hash routing, MTP=1.
+  Not yet supported by upstream Megatron-LM — definitions track Primus's
+  V4 patch set (see third_party/Primus/primus/configs/models/megatron/
+  deepseek_v4_flash.yaml).
+
+architecture:
+  num_layers: 43
+  hidden_size: 4096
+  ffn_hidden_size: 18432
+  vocab_size: 129280
+  max_position_embeddings: 1048576
+  untie_embeddings_and_output_weights: true
+  make_vocab_size_divisible_by: 64
+
+attention:
+  num_attention_heads: 64
+  num_query_groups: 1
+  kv_channels: 512
+  attention_dropout: 0.0
+  add_qkv_bias: false
+  use_mla: false
+  use_deepseek_v4: true
+  q_lora_rank: 1024
+  o_lora_rank: 1024
+  o_groups: 8
+
+mlp:
+  swiglu: true
+  add_bias_linear: false
+  swiglu_limit: 10.0
+
+moe:
+  enabled: true
+  moe_ffn_hidden_size: 2048
+  num_routed_experts: 256
+  num_shared_experts: 1
+  moe_router_topk: 6
+  moe_layer_freq: 1
+  first_k_dense_replace: 0
+  add_router_bias: true
+  router_score_function: sqrtsoftplus
+  num_hash_layers: 3
+
+norm:
+  normalization: RMSNorm
+  layernorm_epsilon: 1.0e-6
+
+position_embedding:
+  position_embedding_type: rope
+  rotary_base: 10000
+  rotary_percent: 0.125  # partial RoPE on last qk_rope_head_dim=64 of head_dim=512
+
+hyper_connection:
+  hc_mult: 4
+  sinkhorn_iters: 20
+
+mtp:
+  num_layers: 1
+  use_separate_hc_head: true
+
+hybrid_attention:
+  # Per-layer compression schedule (44 entries = 43 decoder + 1 MTP).
+  # Source: third_party/Primus/primus/configs/models/megatron/deepseek_v4_flash.yaml
+  # 0   = dense + SWA (sliding-window attention only)
+  # 4   = CSA (Compressed Sparse Attention; overlap mode + Indexer top-512)
+  # 128 = HCA (Heavily Compressed Attention; non-overlap mode)
+  # Read as: first 2 layers dense, middle 40 alternate 4/128, layer 42 = CSA,
+  # MTP layer 43 = dense.
+  compress_ratios:
+    [0, 0,
+     4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
+     4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
+     4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4,
+     0]
+  index_topk: 512
+  index_head_dim: 128
+  index_n_heads: 64
+  attn_sliding_window: 128
+  attn_sink: true
+  compress_rope_theta: 160000.0

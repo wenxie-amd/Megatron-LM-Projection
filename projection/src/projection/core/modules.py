@@ -50,14 +50,26 @@ class EmbeddingModule:
 
 
 class AttentionModule:
-    """Multi-head / grouped-query attention (Llama-style) or Multi-head Latent Attention (DeepSeek)."""
+    """Multi-head / grouped-query attention (Llama-style), Multi-head Latent
+    Attention (DeepSeek-V2/V3), or DeepSeek-V4 hybrid attention.
+
+    For V4 the call site must pass ``compress_ratio`` (0 / 4 / 128) because
+    every layer has a different per-layer cost (Compressor / Indexer).
+    """
 
     def __init__(self, model: ModelConfig):
         self._model = model
 
-    def param_count(self) -> int:
+    def param_count(self, *, compress_ratio: int | None = None) -> int:
         cfg: AttentionConfig = self._model.attention
-        return _mla_param_count(self._model) if cfg.use_mla else _mha_param_count(self._model)
+        if cfg.use_deepseek_v4:
+            from projection.core.deepseek_v4 import v4_attention_param_count_per_layer
+
+            cr = 0 if compress_ratio is None else int(compress_ratio)
+            return v4_attention_param_count_per_layer(self._model, cr)
+        if cfg.use_mla:
+            return _mla_param_count(self._model)
+        return _mha_param_count(self._model)
 
 
 def _mha_param_count(model: ModelConfig) -> int:

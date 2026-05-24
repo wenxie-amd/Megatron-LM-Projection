@@ -169,10 +169,32 @@ def total_activation_bytes_for_rank(
         return num_layers * per_layer
 
     layer_bytes = _layer_bytes(nd, dense_per_layer) + _layer_bytes(nm, moe_per_layer)
+
+    # DeepSeek-V4's mHC residual packs ``hc_mult`` parallel streams into the
+    # layer-internal sequence axis; per-layer GEMMs see ``S * hc_mult`` so the
+    # per-layer activation roughly scales linearly with hc_mult. The HyperMixer
+    # weight matmuls and Compressor/Indexer side paths add a smaller constant
+    # overhead absorbed into this multiplier.
+    if model.is_v4 and model.hyper_connection.enabled:
+        layer_bytes *= model.hyper_connection.hc_mult
+
     total = layer_bytes * in_flight
+
+    # MTP layers live on the last PP rank and behave like extra V4 layers.
+    if is_last_pp and model.is_v4 and model.mtp.num_layers > 0:
+        # MTP gets full layer activations; we charge a representative per-layer
+        # cost (CSA, cr=4) times mtp_num_layers times hc_mult * in_flight.
+        mtp_per_layer = _per_layer_normal(model, workload, parallel)
+        if model.hyper_connection.enabled:
+            mtp_per_layer *= model.hyper_connection.hc_mult
+        total += mtp_per_layer * model.mtp.num_layers * in_flight
 
     if is_first_pp:
         emb_per_mb = 8 * s * b + s * b * h
+        # V4's embedding output is broadcast to hc_mult streams entering the
+        # trunk, so the embedding-side activation scales by hc_mult.
+        if model.is_v4 and model.hyper_connection.enabled:
+            emb_per_mb *= model.hyper_connection.hc_mult
         total += emb_per_mb * in_flight
 
     if is_last_pp:

@@ -197,6 +197,47 @@
   font-family: ui-monospace, Consolas, monospace;
 }
 
+.v4-branches {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.v4-branch {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+}
+.v4-branch h5 {
+  margin: 0 0 0.25rem 0;
+  font-size: 0.85rem;
+}
+.v4-branch-count {
+  color: var(--muted);
+  font-weight: normal;
+  font-size: 0.8rem;
+}
+.v4-branch-desc {
+  margin: 0 0 0.4rem 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  line-height: 1.35;
+}
+.v4-branch-ids {
+  margin: 0;
+  font-size: 0.8rem;
+  font-family: ui-monospace, Consolas, monospace;
+  word-break: break-word;
+}
+.v4-branch-ids strong {
+  font-family: inherit;
+  color: var(--muted);
+  margin-right: 0.4rem;
+}
+
 .model-name-row {
   display: flex;
   align-items: center;

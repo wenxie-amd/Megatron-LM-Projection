@@ -1,0 +1,83 @@
+name: deepseek-ai/DeepSeek-V4-Pro
+description: >-
+  DeepSeek-V4-Pro (1.6T total / 49B activated). Larger sibling of V4-Flash:
+  hybrid attention with first 2 layers HCA (instead of dense), 61 main layers
+  + 1 MTP, 384 routed experts, q_lora_rank=1536, o_groups=16, index_topk=1024.
+  Not yet supported by upstream Megatron-LM — definitions track Primus's
+  V4 patch set (see third_party/Primus/primus/configs/models/megatron/
+  deepseek_v4_pro.yaml).
+
+architecture:
+  num_layers: 61
+  hidden_size: 7168
+  ffn_hidden_size: 18432
+  vocab_size: 129280
+  max_position_embeddings: 1048576
+  untie_embeddings_and_output_weights: true
+  make_vocab_size_divisible_by: 64
+
+attention:
+  num_attention_heads: 128
+  num_query_groups: 1
+  kv_channels: 512
+  attention_dropout: 0.0
+  add_qkv_bias: false
+  use_mla: false
+  use_deepseek_v4: true
+  q_lora_rank: 1536
+  o_lora_rank: 1024
+  o_groups: 16
+
+mlp:
+  swiglu: true
+  add_bias_linear: false
+  swiglu_limit: 10.0
+
+moe:
+  enabled: true
+  moe_ffn_hidden_size: 3072
+  num_routed_experts: 384
+  num_shared_experts: 1
+  moe_router_topk: 6
+  moe_layer_freq: 1
+  first_k_dense_replace: 0
+  add_router_bias: true
+  router_score_function: sqrtsoftplus
+  num_hash_layers: 3
+
+norm:
+  normalization: RMSNorm
+  layernorm_epsilon: 1.0e-6
+
+position_embedding:
+  position_embedding_type: rope
+  rotary_base: 10000
+  rotary_percent: 0.125  # partial RoPE on last qk_rope_head_dim=64 of head_dim=512
+
+hyper_connection:
+  hc_mult: 4
+  sinkhorn_iters: 20
+
+mtp:
+  num_layers: 1
+  use_separate_hc_head: true
+
+hybrid_attention:
+  # Per-layer compression schedule (62 entries = 61 decoder + 1 MTP).
+  # Source: third_party/Primus/primus/configs/models/megatron/deepseek_v4_pro.yaml
+  # 0   = dense + SWA (sliding-window attention only)
+  # 4   = CSA (Compressed Sparse Attention; overlap mode + Indexer top-1024)
+  # 128 = HCA (Heavily Compressed Attention; non-overlap mode)
+  # First 2 layers are HCA (not dense as in Flash); MTP layer is dense.
+  compress_ratios:
+    [128, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
+     4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
+     4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
+     4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
+     4, 0]
+  index_topk: 1024
+  index_head_dim: 128
+  index_n_heads: 64
+  attn_sliding_window: 128
+  attn_sink: true
+  compress_rope_theta: 160000.0

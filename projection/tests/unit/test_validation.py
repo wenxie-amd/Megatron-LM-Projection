@@ -73,12 +73,15 @@ def test_parallel_dims_must_be_positive() -> None:
         ParallelConfig(tensor_model_parallel_size=0)
 
 
-def test_recompute_block_caps_at_layers_per_pp_rank() -> None:
-    """``block`` mode: recompute_num_layers * num_chunks_per_rank must fit per rank."""
+def test_recompute_block_overflow_is_silently_clamped() -> None:
+    """``block`` mode: when ``recompute_num_layers * num_chunks_per_rank``
+    exceeds the layer count on a rank, validation passes and the activation
+    accounting clamps to "recompute every layer on this rank" (same as
+    ``method=uniform``)."""
     model = load_model_config("meta-llama/Llama-3.1-8B")
     parallel = ParallelConfig(pipeline_model_parallel_size=4)
-    # num_chunks_per_rank = pp * vpp = 4 * 1 = 4. recompute_num_layers=4 * 4 = 16 > 8.
-    bad = Workload(
+    # num_chunks_per_rank = pp*vpp = 4. recompute_num_layers=4 → 4*4=16 > 8/rank.
+    too_big = Workload(
         seq_length=1024,
         micro_batch_size=1,
         global_batch_size=64,
@@ -86,15 +89,22 @@ def test_recompute_block_caps_at_layers_per_pp_rank() -> None:
         recompute_method="block",
         recompute_num_layers=4,
     )
-    with pytest.raises(ValueError, match="exceeds layers per PP rank"):
-        validate_workload(model, parallel, bad)
+    validate_workload(model, parallel, too_big)  # must not raise
+
+    # And the clamped per-rank recomputed-layer count never exceeds the rank's
+    # layer count.
+    from projection.parallel.ranks import total_recompute_layers_on_rank
+
+    for pp_rank in range(parallel.pipeline_model_parallel_size):
+        recomputed = total_recompute_layers_on_rank(model, parallel, too_big, pp_rank)
+        assert recomputed <= 8 // 4 + (1 if pp_rank < 8 % 4 else 0) or recomputed <= 8
 
 
-def test_recompute_block_with_vpp_uses_pp_times_vpp_chunks() -> None:
+def test_recompute_block_with_vpp_overflow_is_silently_clamped() -> None:
+    """VPP variant — num_chunks_per_rank=pp*vpp=8, recompute=2 → 16 > 8."""
     model = load_model_config("meta-llama/Llama-3.1-8B")
     parallel = ParallelConfig(pipeline_model_parallel_size=4, virtual_pipeline_model_parallel_size=2)
-    # num_chunks_per_rank = pp*vpp = 8. recompute_num_layers=2 → 2*8=16 > 8 layers/rank.
-    bad = Workload(
+    too_big = Workload(
         seq_length=1024,
         micro_batch_size=1,
         global_batch_size=64,
@@ -102,8 +112,7 @@ def test_recompute_block_with_vpp_uses_pp_times_vpp_chunks() -> None:
         recompute_method="block",
         recompute_num_layers=2,
     )
-    with pytest.raises(ValueError, match="exceeds layers per PP rank"):
-        validate_workload(model, parallel, bad)
+    validate_workload(model, parallel, too_big)  # must not raise
 
 
 def test_tp_must_divide_num_query_groups_gqa() -> None:

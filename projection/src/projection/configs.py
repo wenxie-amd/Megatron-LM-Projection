@@ -43,9 +43,17 @@ class ArchitectureConfig(BaseModel):
 class AttentionConfig(BaseModel):
     """Multi-head attention block shape.
 
-    Set ``use_mla=true`` to switch to Multi-head Latent Attention (DeepSeek-V2/V3),
-    in which case the MLA-specific fields take over and ``kv_channels`` /
-    ``num_query_groups`` are ignored.
+    Three attention variants are supported:
+
+    - **MHA / GQA** (default): standard heads with optional query groups.
+    - **MLA** (``use_mla=true``): Multi-head Latent Attention (DeepSeek-V2/V3).
+      MLA-specific fields (``kv_lora_rank``, ``qk_nope_head_dim``,
+      ``qk_rope_head_dim``, ``v_head_dim``) take over.
+    - **DeepSeek-V4 hybrid attention** (``use_deepseek_v4=true``): per-layer
+      CSA / HCA / SWA branches with single-latent KV (K=V=``kv_channels``),
+      Q LoRA, grouped low-rank O projection, and a learnable per-head
+      ``attn_sink``. Per-layer branch selection and Compressor / Indexer
+      shapes come from ``ModelConfig.hybrid_attention``.
     """
 
     num_attention_heads: int
@@ -61,6 +69,10 @@ class AttentionConfig(BaseModel):
     qk_rope_head_dim: int | None = None
     v_head_dim: int | None = None
 
+    use_deepseek_v4: bool = False
+    o_lora_rank: int | None = None
+    o_groups: int = 1
+
     def num_kv_heads(self) -> int:
         return self.num_query_groups or self.num_attention_heads
 
@@ -73,6 +85,8 @@ class MLPConfig(BaseModel):
 
     swiglu: bool = False
     add_bias_linear: bool = True
+    # DeepSeek-V4: clamp SwiGLU activation (FP4/FP8 stability). 0 disables.
+    swiglu_limit: float = 0.0
 
 
 class MoEConfig(BaseModel):
@@ -86,6 +100,14 @@ class MoEConfig(BaseModel):
     moe_layer_freq: int = 1
     first_k_dense_replace: int = 0
     add_router_bias: bool = False
+    # Score function: "softmax" / "sigmoid" / "sqrtsoftplus" (V4). Information-only —
+    # parameter count is identical across scoring functions.
+    router_score_function: Literal["softmax", "sigmoid", "sqrtsoftplus"] = "softmax"
+    # DeepSeek-V4: first ``num_hash_layers`` MoE layers replace the topk router
+    # with a fixed ``tid2eid`` lookup (a non-trainable int32 buffer of shape
+    # ``[vocab_size, moe_router_topk]``). The buffer occupies memory but has no
+    # gradient or optimizer state.
+    num_hash_layers: int = 0
 
 
 class NormConfig(BaseModel):
@@ -97,6 +119,64 @@ class PositionEmbeddingConfig(BaseModel):
     position_embedding_type: Literal["learned_absolute", "rope", "none"] = "learned_absolute"
     rotary_base: float = 10_000.0
     rotary_percent: float = 1.0
+
+
+class HyperConnectionConfig(BaseModel):
+    """mHC — Manifold-Constrained Hyper-Connections (DeepSeek-V4).
+
+    When ``hc_mult > 1`` each transformer layer carries ``hc_mult`` parallel
+    hidden streams, packed into the layer-internal sequence axis (so per-layer
+    GEMMs run at ``S * hc_mult``). Two small per-layer ``HyperMixer`` modules
+    (one for attention, one for FFN) compute the ``pre / post / comb`` weights
+    that collapse / expand / Sinkhorn-mix the streams; a single ``HyperHead``
+    sits at the end of the trunk (and one per MTP depth) collapsing K streams
+    back to 1.
+    """
+
+    hc_mult: int = 1
+    sinkhorn_iters: int = 20
+
+    @property
+    def enabled(self) -> bool:
+        return self.hc_mult > 1
+
+
+class MTPConfig(BaseModel):
+    """Multi-Token Prediction (NextN). Adds extra prediction layers at the end.
+
+    Each MTP depth is a full transformer layer (attention + MoE) plus a
+    ``2H -> H`` ``eh_proj``. When the model uses Hyper-Connections, every MTP
+    depth also owns its own ``HyperHead`` (``use_separate_hc_head=true``).
+    """
+
+    num_layers: int = 0
+    use_separate_hc_head: bool = True
+
+
+class HybridAttentionConfig(BaseModel):
+    """DeepSeek-V4 hybrid attention schedule.
+
+    Per-layer ``compress_ratios[i]`` selects one of three branches:
+
+    - ``0``: dense + sliding-window attention (no compression branch).
+    - ``4``: CSA — Compressed-Sparse Attention. The Compressor pools every
+      4 tokens (overlap mode), then the per-layer ``Indexer`` picks the
+      top-``index_topk`` compressed slots per query.
+    - ``128``: HCA — Heavily Compressed Attention. The Compressor pools
+      every 128 tokens (non-overlap mode); full causal cross-attention over
+      the compressed pool.
+
+    ``compress_ratios`` may have length ``num_layers`` or
+    ``num_layers + mtp_num_layers`` — the trailing slice applies to MTP.
+    """
+
+    compress_ratios: list[int]
+    index_topk: int = 0
+    index_head_dim: int = 0
+    index_n_heads: int = 0
+    attn_sliding_window: int = 0
+    attn_sink: bool = True
+    compress_rope_theta: float = 160_000.0
 
 
 class ModelConfig(BaseModel):
@@ -112,10 +192,18 @@ class ModelConfig(BaseModel):
     moe: MoEConfig = Field(default_factory=MoEConfig)
     norm: NormConfig = Field(default_factory=NormConfig)
     position_embedding: PositionEmbeddingConfig = Field(default_factory=PositionEmbeddingConfig)
+    hyper_connection: HyperConnectionConfig = Field(default_factory=HyperConnectionConfig)
+    mtp: MTPConfig = Field(default_factory=MTPConfig)
+    hybrid_attention: HybridAttentionConfig | None = None
 
     @property
     def is_proxy(self) -> bool:
         return self.name.endswith("(proxy)")
+
+    @property
+    def is_v4(self) -> bool:
+        """True iff this model uses the DeepSeek-V4 hybrid attention path."""
+        return self.attention.use_deepseek_v4 and self.hybrid_attention is not None
 
 
 class GPUSpec(BaseModel):

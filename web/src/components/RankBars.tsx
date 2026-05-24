@@ -9,6 +9,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import type { TooltipContentProps } from "recharts";
 
 import type { OptimizerDtype, Precision, RankReport } from "../pyodide/types";
 
@@ -83,7 +84,7 @@ export function RankBars({
         <CartesianGrid strokeDasharray="3 3" stroke="#ddd" />
         <XAxis dataKey="rank" />
         <YAxis label={{ value: "GiB", angle: -90, position: "insideLeft" }} />
-        <Tooltip formatter={(v) => `${Number(v)} GiB`} itemSorter={(item) => orderKey(item.dataKey)} />
+        <Tooltip content={(props) => <TotalAwareTooltip {...props} orderKey={orderKey} />} />
         <Legend itemSorter={(item) => orderKey(item.dataKey)} />
         <Bar stackId="m" dataKey="optimizer_state" fill="#ec4899" name={stateLabel} />
         <Bar stackId="m" dataKey="optimizer_main_param" fill="#8b5cf6" name={mainParamLabel} />
@@ -105,5 +106,30 @@ export function RankBars({
         )}
       </BarChart>
     </ResponsiveContainer>
+  );
+}
+
+interface TotalAwareTooltipProps extends TooltipContentProps<number, string> {
+  orderKey: (dataKey: unknown) => number;
+}
+
+function TotalAwareTooltip({ active, payload, label, orderKey }: TotalAwareTooltipProps) {
+  if (!active || !payload || payload.length === 0) return null;
+  const sorted = [...payload].sort((a, b) => orderKey(a.dataKey) - orderKey(b.dataKey));
+  const total = sorted.reduce((acc, p) => acc + (Number(p.value) || 0), 0);
+  return (
+    <div className="recharts-default-tooltip" style={{ background: "#fff", border: "1px solid #ccc", padding: "0.4rem 0.6rem", fontSize: "0.85rem" }}>
+      <p style={{ margin: "0 0 0.25rem", fontWeight: 600 }}>{label}</p>
+      <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+        {sorted.map((p) => (
+          <li key={String(p.dataKey)} style={{ color: p.color, padding: "0.1rem 0" }}>
+            {p.name}: {Number(p.value).toFixed(2)} GiB
+          </li>
+        ))}
+        <li style={{ borderTop: "1px solid #ccc", marginTop: "0.25rem", paddingTop: "0.25rem", fontWeight: 600 }}>
+          total: {total.toFixed(2)} GiB
+        </li>
+      </ul>
+    </div>
   );
 }
