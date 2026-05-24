@@ -54,7 +54,7 @@ class Scenario:
 
 
 SCENARIOS: list[Scenario] = [
-    Scenario(name="default_bf16_tp1_pp1", model_key="llama3.1_8B"),
+    Scenario(name="default_bf16_tp1_pp1", model_key="meta-llama/Llama-3.1-8B"),
 ]
 
 

@@ -8,6 +8,8 @@ import {
   parseLayoutList,
   parseRankList,
   reducer,
+  suggestLayout,
+  suggestLayoutBalanced,
 } from "./store";
 
 describe("parseRankList", () => {
@@ -49,6 +51,29 @@ describe("parseLayoutList", () => {
   });
   it("returns null for empty input", () => {
     expect(parseLayoutList("")).toBeNull();
+  });
+});
+
+describe("suggestLayout / suggestLayoutBalanced", () => {
+  it("evenly splits when num_layers is divisible", () => {
+    expect(suggestLayout(32, 4)).toEqual([8, 8, 8, 8]);
+  });
+  it("front + back get the +1 surplus", () => {
+    expect(suggestLayout(35, 4)).toEqual([9, 9, 8, 9]);
+    expect(suggestLayout(34, 4)).toEqual([9, 8, 8, 9]);
+    expect(suggestLayout(33, 4)).toEqual([9, 8, 8, 8]);
+  });
+  it("balanced layout absorbs cheap dense layers onto chunk 0", () => {
+    // DSV3-like: 61 layers, 3 dense, 58 MoE, dense/MoE cost ratio ~ 2.76.
+    const layout = suggestLayoutBalanced(61, 3, 8, { dense: 1, moe: 2.76 });
+    expect(layout.reduce((a, b) => a + b, 0)).toBe(61);
+    expect(layout.length).toBe(8);
+    // chunk 0 should be larger than the others (absorbs dense + extra MoE).
+    expect(layout[0]).toBeGreaterThan(layout[1]);
+  });
+  it("falls back to simple split for dense models", () => {
+    const layout = suggestLayoutBalanced(32, 0, 4, { dense: 1, moe: 1 });
+    expect(layout).toEqual([8, 8, 8, 8]);
   });
 });
 

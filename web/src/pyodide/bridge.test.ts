@@ -24,7 +24,7 @@ const fixturePath = join(
   "projection",
   "tests",
   "fixtures",
-  "llama3_1_8b",
+  "meta-llama__Llama-3.1-8B",
   "default_bf16_tp1_pp1.json",
 );
 

@@ -1,6 +1,6 @@
 {
-  "scenario": "deepseek_v2_lite default workload, TP=1 PP=1 DP=1 EP=1, BF16",
-  "model": "deepseek_v2_lite",
+  "scenario": "DeepSeek-V2-Lite default workload, TP=1 PP=1 DP=1 EP=1, BF16",
+  "model": "deepseek-ai/DeepSeek-V2-Lite",
   "parallel": {
     "precision": "bf16",
     "tensor_model_parallel_size": 1,

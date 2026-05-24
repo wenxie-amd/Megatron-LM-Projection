@@ -233,10 +233,10 @@ export function reducer(state: State, action: Action): State {
     case "SET_PARALLEL":
       return _withDerivedDP(state, { parallel: action.patch });
     case "SET_PP_MODE": {
+      // VPP is now used in both direct and layout modes; only the layout list
+      // is cleared when switching away from layout mode.
       const next = _withDerivedDP(state, {
         parallel: {
-          virtual_pipeline_model_parallel_size:
-            action.mode === "direct" ? state.parallel.virtual_pipeline_model_parallel_size : null,
           pipeline_model_parallel_layout:
             action.mode === "layout" ? state.parallel.pipeline_model_parallel_layout : null,
         },
@@ -313,6 +313,95 @@ export function parseLayoutList(text: string): number[] | null {
     out.push(n);
   }
   return out;
+}
+
+/** Suggest a layer-count-per-chunk layout: front + back get the +1 surplus first. */
+export function suggestLayout(numLayers: number, chunks: number): number[] {
+  if (numLayers <= 0 || chunks <= 0) return [];
+  const base = Math.floor(numLayers / chunks);
+  const extra = numLayers - base * chunks;
+  const out = Array<number>(chunks).fill(base);
+  let frontIdx = 0;
+  let backIdx = chunks - 1;
+  let useFront = true;
+  for (let i = 0; i < extra; i++) {
+    if (useFront && frontIdx <= backIdx) {
+      out[frontIdx++] += 1;
+    } else {
+      out[backIdx--] += 1;
+    }
+    useFront = !useFront;
+  }
+  return out;
+}
+
+interface LayerCosts {
+  dense: number;
+  moe: number;
+}
+
+/** Approximate per-layer parameter cost — used only to pick a balanced layout. */
+export function estimateLayerCosts(state: State): LayerCosts {
+  const model = state.modelConfig;
+  if (!model) return { dense: 1, moe: 1 };
+  const h = model.architecture.hidden_size;
+  const ffn = model.architecture.ffn_hidden_size;
+  const tp = Math.max(1, state.parallel.tensor_model_parallel_size);
+  const swiglu = model.mlp.swiglu ? 3 : 2;
+
+  // Rough attn cost: 4·h² / TP. For MLA the exact count differs but the dense
+  // vs. MoE ratio is what matters and attn cancels first-order.
+  const attnCost = (4 * h * h) / tp;
+  const denseMlp = (swiglu * h * ffn) / tp;
+  const denseLayer = attnCost + denseMlp;
+
+  if (!model.moe?.enabled) {
+    return { dense: denseLayer, moe: denseLayer };
+  }
+
+  const moe = model.moe;
+  const ep = Math.max(1, state.parallel.expert_model_parallel_size);
+  const etp =
+    state.parallel.moe_folding && state.parallel.expert_tensor_parallel_size
+      ? Math.max(1, state.parallel.expert_tensor_parallel_size)
+      : tp;
+
+  const gate = (h * moe.num_routed_experts) / tp;
+  const routed = ((moe.num_routed_experts / ep) * swiglu * h * moe.moe_ffn_hidden_size) / etp;
+  const shared = (moe.num_shared_experts * swiglu * h * moe.moe_ffn_hidden_size) / tp;
+  const moeLayer = attnCost + gate + routed + shared;
+
+  return { dense: denseLayer, moe: moeLayer };
+}
+
+/** Balanced layout for MoE models with ``first_k_dense_replace > 0``.
+ *
+ * Dense layers cost less per layer than MoE layers (especially with EP > 1).
+ * If we naively give each chunk equal layer counts, the first PP rank (which
+ * holds the dense layers + embedding) ends up *underutilised*. This packs
+ * extra MoE layers onto chunk 0 to absorb the dense surplus.
+ */
+export function suggestLayoutBalanced(
+  numLayers: number,
+  firstKDense: number,
+  chunks: number,
+  costs: LayerCosts,
+): number[] {
+  if (chunks <= 1 || numLayers <= 0) return suggestLayout(numLayers, chunks);
+  if (firstKDense <= 0 || costs.moe <= costs.dense) return suggestLayout(numLayers, chunks);
+
+  const numMoE = numLayers - firstKDense;
+  if (numMoE <= 0) return suggestLayout(numLayers, chunks);
+
+  const totalCost = firstKDense * costs.dense + numMoE * costs.moe;
+  const targetPerChunk = totalCost / chunks;
+  // Chunk 0 absorbs all dense layers + just enough MoE to hit the target.
+  const xMoE = Math.round((targetPerChunk - firstKDense * costs.dense) / costs.moe);
+  const chunk0MoE = Math.max(0, Math.min(numMoE - (chunks - 1), xMoE));
+  const chunk0 = firstKDense + chunk0MoE;
+  // Remaining MoE layers spread evenly across the remaining chunks.
+  const tail = suggestLayout(numMoE - chunk0MoE, chunks - 1);
+  return [chunk0, ...tail];
 }
 
 export const PRECISIONS: Precision[] = ["bf16", "fp8"];

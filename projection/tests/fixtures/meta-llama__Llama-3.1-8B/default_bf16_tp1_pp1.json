@@ -1,6 +1,6 @@
 {
-  "scenario": "llama3.1_8B default workload, TP=1 PP=1 DP=1, BF16, distributed optimizer (fp32 grad accumulation)",
-  "model": "llama3.1_8B",
+  "scenario": "Llama-3.1-8B default workload, TP=1 PP=1 DP=1, BF16, distributed optimizer (fp32 grad accumulation)",
+  "model": "meta-llama/Llama-3.1-8B",
   "parallel": {
     "precision": "bf16",
     "tensor_model_parallel_size": 1,

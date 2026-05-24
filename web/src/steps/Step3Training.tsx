@@ -10,8 +10,11 @@ import {
   PRECISIONS,
   clientValidate,
   deriveView,
+  estimateLayerCosts,
   formatEdp,
   parseLayoutList,
+  suggestLayout,
+  suggestLayoutBalanced,
 } from "../state/store";
 import type { OptimizerDtype, Precision, Workload } from "../pyodide/types";
 
@@ -24,13 +27,15 @@ export function Step3Training() {
   const layoutParsed = parseLayoutList(state.layoutText);
   const layoutSum = layoutParsed?.reduce((a, b) => a + b, 0) ?? null;
   const numLayers = state.modelConfig?.architecture.num_layers ?? null;
+  const layoutVpp = parallel.virtual_pipeline_model_parallel_size ?? 1;
+  const expectedLayoutLen = parallel.pipeline_model_parallel_size * Math.max(1, layoutVpp);
 
   let layoutError: string | null = null;
   if (ppMode === "layout") {
     if (!layoutParsed) {
       layoutError = "Enter positive integers separated by commas (e.g. 9, 8, 8, 7)";
-    } else if (layoutParsed.length !== parallel.pipeline_model_parallel_size) {
-      layoutError = `layout must have ${parallel.pipeline_model_parallel_size} entries (got ${layoutParsed.length})`;
+    } else if (layoutParsed.length !== expectedLayoutLen) {
+      layoutError = `layout must have pp*vpp=${expectedLayoutLen} entries (got ${layoutParsed.length})`;
     } else if (numLayers !== null && layoutSum !== numLayers) {
       layoutError = `layout sums to ${layoutSum} but num_layers=${numLayers}`;
     }
@@ -45,6 +50,36 @@ export function Step3Training() {
       dispatch({ type: "SET_PARALLEL", patch: { pipeline_model_parallel_layout: effectiveLayout } });
     }
   }, [ppMode, effectiveLayout, parallel.pipeline_model_parallel_layout, dispatch]);
+
+  // Auto-fill the layout textarea whenever the user is in layout mode and
+  // (PP, VPP, num_layers, EP) changes. We re-fill even after user edits so
+  // changing knobs invalidates a now-stale layout. For MoE models with
+  // ``first_k_dense_replace > 0`` we use a balanced layout that absorbs the
+  // cheap dense layers onto chunk 0.
+  const firstKDense = state.modelConfig?.moe?.first_k_dense_replace ?? 0;
+  useEffect(() => {
+    if (ppMode !== "layout" || numLayers === null) return;
+    const costs = estimateLayerCosts(state);
+    const suggestion =
+      state.modelConfig?.moe?.enabled && firstKDense > 0
+        ? suggestLayoutBalanced(numLayers, firstKDense, expectedLayoutLen, costs)
+        : suggestLayout(numLayers, expectedLayoutLen);
+    const text = suggestion.join(", ");
+    if (state.layoutText !== text) {
+      dispatch({ type: "SET_LAYOUT_TEXT", value: text });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    ppMode,
+    parallel.pipeline_model_parallel_size,
+    layoutVpp,
+    numLayers,
+    parallel.expert_model_parallel_size,
+    parallel.tensor_model_parallel_size,
+    parallel.expert_tensor_parallel_size,
+    parallel.moe_folding,
+    firstKDense,
+  ]);
 
   const isMoE = !!state.modelConfig?.moe.enabled;
 
@@ -274,32 +309,36 @@ export function Step3Training() {
             Layout (per-stage layer counts)
           </label>
         </div>
-        {ppMode === "direct" && (
-          <NumberField
-            label="VPP (virtual_pipeline_model_parallel_size)"
-            value={parallel.virtual_pipeline_model_parallel_size ?? 1}
-            min={1}
-            onChange={(v) =>
-              dispatch({
-                type: "SET_PARALLEL",
-                patch: { virtual_pipeline_model_parallel_size: v === 1 ? null : Math.max(1, v) },
-              })
-            }
-          />
-        )}
+        <NumberField
+          label="VPP (virtual_pipeline_model_parallel_size)"
+          value={parallel.virtual_pipeline_model_parallel_size ?? 1}
+          min={1}
+          onChange={(v) =>
+            dispatch({
+              type: "SET_PARALLEL",
+              patch: { virtual_pipeline_model_parallel_size: v === 1 ? null : Math.max(1, v) },
+            })
+          }
+          hint={
+            ppMode === "layout"
+              ? `Layout will have pp*vpp = ${expectedLayoutLen} chunks`
+              : "1 means no interleaved schedule"
+          }
+        />
         {ppMode === "layout" && (
           <TextField
-            label="Layout (comma-separated layer counts per stage)"
+            label={`Layout (${expectedLayoutLen} layer counts per chunk, comma-separated)`}
             value={state.layoutText}
             onChange={(v) => dispatch({ type: "SET_LAYOUT_TEXT", value: v })}
             placeholder={
-              numLayers !== null
-                ? `e.g. ${[...Array(parallel.pipeline_model_parallel_size)].map((_, i) =>
-                    Math.floor(numLayers / parallel.pipeline_model_parallel_size) + (i === 0 ? numLayers % parallel.pipeline_model_parallel_size : 0),
-                  ).join(", ")}`
-                : "e.g. 9, 8, 8, 7"
+              numLayers !== null ? suggestLayout(numLayers, expectedLayoutLen).join(", ") : "e.g. 9, 8, 8, 7"
             }
-            hint={layoutError ?? undefined}
+            hint={
+              layoutError ??
+              (state.modelConfig?.moe?.enabled && firstKDense > 0
+                ? `Chunk 0 absorbs ${firstKDense} dense + extra MoE layers to balance against the heavier MoE chunks; you can edit freely.`
+                : "Front + back chunks get the +1 surplus. You can edit freely.")
+            }
           />
         )}
 

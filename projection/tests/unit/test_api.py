@@ -16,7 +16,12 @@ from projection.api import (
     run_projection,
 )
 
-FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "llama3_1_8b" / "default_bf16_tp1_pp1.json"
+FIXTURE = (
+    Path(__file__).resolve().parent.parent
+    / "fixtures"
+    / "meta-llama__Llama-3.1-8B"
+    / "default_bf16_tp1_pp1.json"
+)
 
 
 def _default_payload(ranks: list[int] | None = None) -> dict:
@@ -31,7 +36,7 @@ def _default_payload(ranks: list[int] | None = None) -> dict:
 
 
 def test_list_models_includes_llama() -> None:
-    assert "llama3.1_8B" in list_models()
+    assert "meta-llama/Llama-3.1-8B" in list_models()
 
 
 def test_list_gpus_includes_h100() -> None:
@@ -39,8 +44,8 @@ def test_list_gpus_includes_h100() -> None:
 
 
 def test_get_model_config_round_trips() -> None:
-    cfg = get_model_config("llama3.1_8B")
-    assert cfg["name"] == "llama3.1_8B"
+    cfg = get_model_config("meta-llama/Llama-3.1-8B")
+    assert cfg["name"] == "meta-llama/Llama-3.1-8B"
     assert cfg["architecture"]["num_layers"] == 32
 
 
@@ -78,7 +83,7 @@ def test_run_projection_rejects_duplicate_ranks() -> None:
 
 def test_run_projection_supports_inline_model_dict() -> None:
     payload = _default_payload()
-    payload["model"] = get_model_config("llama3.1_8B")
+    payload["model"] = get_model_config("meta-llama/Llama-3.1-8B")
     out = run_projection(payload)
     assert out["rank_reports"][0]["param_count"] == 8_030_261_248
 

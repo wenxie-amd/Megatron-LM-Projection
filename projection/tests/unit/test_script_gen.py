@@ -8,7 +8,7 @@ from projection.script_gen import generate_megatron_script
 
 
 def _common_args():
-    return load_model_config("llama3.1_8B"), TrainingHyperparameters()
+    return load_model_config("meta-llama/Llama-3.1-8B"), TrainingHyperparameters()
 
 
 def test_llama_script_contains_core_flags() -> None:
@@ -56,7 +56,7 @@ def test_fp8_emits_fp8_format() -> None:
 
 
 def test_mla_script_contains_mla_flags() -> None:
-    model = load_model_config("deepseek_v2_lite")
+    model = load_model_config("deepseek-ai/DeepSeek-V2-Lite")
     hp = TrainingHyperparameters()
     parallel = ParallelConfig(expert_model_parallel_size=8)
     workload = Workload(seq_length=4096, micro_batch_size=1, global_batch_size=64)

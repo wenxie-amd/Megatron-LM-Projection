@@ -1,0 +1,46 @@
+name: zai-org/GLM-5
+description: GLM-5 (Zhipu AI, ~744B total / ~40B activated). MoE + MLA, 3 dense + 75 MoE layers.
+
+architecture:
+  num_layers: 78
+  hidden_size: 6144
+  ffn_hidden_size: 12288
+  vocab_size: 151552
+  max_position_embeddings: 131072
+  untie_embeddings_and_output_weights: true
+  make_vocab_size_divisible_by: 128
+
+attention:
+  num_attention_heads: 64
+  num_query_groups: 64
+  attention_dropout: 0.0
+  add_qkv_bias: false
+  use_mla: true
+  q_lora_rank: 2048
+  kv_lora_rank: 512
+  qk_nope_head_dim: 192
+  qk_rope_head_dim: 64
+  v_head_dim: 256
+
+mlp:
+  swiglu: true
+  add_bias_linear: false
+
+moe:
+  enabled: true
+  moe_ffn_hidden_size: 2048
+  num_routed_experts: 256
+  num_shared_experts: 1
+  moe_router_topk: 8
+  moe_layer_freq: 1
+  first_k_dense_replace: 3
+  add_router_bias: true
+
+norm:
+  normalization: RMSNorm
+  layernorm_epsilon: 1.0e-5
+
+position_embedding:
+  position_embedding_type: rope
+  rotary_base: 1000000
+  rotary_percent: 1.0

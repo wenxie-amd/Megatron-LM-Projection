@@ -164,7 +164,9 @@ class ParallelConfig(BaseModel):
     """``ModelParallelConfig`` subset.
 
     PP can be set either via ``pipeline_model_parallel_size`` + ``virtual_pipeline_model_parallel_size``
-    or via ``pipeline_model_parallel_layout`` (mutually exclusive).
+    or via ``pipeline_model_parallel_layout`` (one layer count per chunk; with
+    VPP the layout has ``pp * vpp`` entries, consecutive ``vpp`` chunks per
+    PP rank).
 
     ``data_parallel_size`` is treated as derived in the UI (``world_size /
     (TP * PP * CP)``) but accepted here as an explicit field for API stability
@@ -201,13 +203,6 @@ class ParallelConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_pp(self) -> "ParallelConfig":
-        if (
-            self.pipeline_model_parallel_layout is not None
-            and self.virtual_pipeline_model_parallel_size is not None
-        ):
-            raise ValueError(
-                "pipeline_model_parallel_layout and virtual_pipeline_model_parallel_size are mutually exclusive"
-            )
         for name, value in {
             "tensor_model_parallel_size": self.tensor_model_parallel_size,
             "pipeline_model_parallel_size": self.pipeline_model_parallel_size,

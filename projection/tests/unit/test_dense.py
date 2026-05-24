@@ -31,7 +31,7 @@ def _load_fixture(name: str) -> dict:
 
 
 def _default_setup() -> tuple[Trainer, dict]:
-    fixture = _load_fixture("llama3_1_8b/default_bf16_tp1_pp1.json")
+    fixture = _load_fixture("meta-llama__Llama-3.1-8B/default_bf16_tp1_pp1.json")
     model = load_model_config(fixture["model"])
     parallel = ParallelConfig(
         precision=Precision(fixture["parallel"]["precision"]),
@@ -70,7 +70,7 @@ def test_llama3_1_8b_rank_0_memory_matches_fixture() -> None:
 
 
 def test_pp_partition_splits_layers_evenly() -> None:
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     parallel = ParallelConfig(pipeline_model_parallel_size=4)
     validate_parallel_config(model, parallel)
     layer_counts = layers_per_pp_stage(model, parallel)
@@ -83,7 +83,7 @@ def test_pp_partition_splits_layers_evenly() -> None:
 
 
 def test_pp_layout_overrides_partition() -> None:
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     layout = [9, 8, 8, 7]
     parallel = ParallelConfig(pipeline_model_parallel_size=4, pipeline_model_parallel_layout=layout)
     validate_parallel_config(model, parallel)
@@ -91,37 +91,58 @@ def test_pp_layout_overrides_partition() -> None:
 
 
 def test_pp_non_divisible_raises_with_helpful_message() -> None:
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     parallel = ParallelConfig(pipeline_model_parallel_size=5)
     with pytest.raises(ValueError, match="not divisible"):
         validate_parallel_config(model, parallel)
 
 
 def test_pp_vpp_non_divisible_suggests_layout() -> None:
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     parallel = ParallelConfig(pipeline_model_parallel_size=4, virtual_pipeline_model_parallel_size=3)
     with pytest.raises(ValueError, match="pipeline_model_parallel_layout"):
         validate_parallel_config(model, parallel)
 
 
 def test_pp_layout_wrong_sum_raises() -> None:
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     parallel = ParallelConfig(pipeline_model_parallel_size=4, pipeline_model_parallel_layout=[9, 8, 8, 8])
     with pytest.raises(ValueError, match="sums to 33"):
         validate_parallel_config(model, parallel)
 
 
-def test_layout_and_vpp_are_mutually_exclusive() -> None:
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        ParallelConfig(
-            pipeline_model_parallel_size=4,
-            virtual_pipeline_model_parallel_size=2,
-            pipeline_model_parallel_layout=[8, 8, 8, 8],
-        )
+def test_layout_with_vpp_uses_pp_times_vpp_entries() -> None:
+    """Layout + VPP: layout has pp*vpp entries; each PP rank owns vpp consecutive chunks."""
+    from projection import load_model_config
+    from projection.parallel.ranks import layers_per_pp_stage, validate_parallel_config
+
+    model = load_model_config("meta-llama/Llama-3.1-8B")
+    parallel = ParallelConfig(
+        pipeline_model_parallel_size=4,
+        virtual_pipeline_model_parallel_size=2,
+        pipeline_model_parallel_layout=[5, 3, 4, 4, 4, 4, 4, 4],
+    )
+    validate_parallel_config(model, parallel)
+    # PP rank 0 owns chunks [0, 1] = 5 + 3 = 8 layers; rank 1 owns [2, 3] = 8 ...
+    assert layers_per_pp_stage(model, parallel) == [8, 8, 8, 8]
+
+
+def test_layout_with_vpp_wrong_entry_count_raises() -> None:
+    from projection import load_model_config
+    from projection.parallel.ranks import validate_parallel_config
+
+    model = load_model_config("meta-llama/Llama-3.1-8B")
+    parallel = ParallelConfig(
+        pipeline_model_parallel_size=4,
+        virtual_pipeline_model_parallel_size=2,
+        pipeline_model_parallel_layout=[8, 8, 8, 8],  # only 4 entries, need 8
+    )
+    with pytest.raises(ValueError, match="pp\\*vpp=8"):
+        validate_parallel_config(model, parallel)
 
 
 def test_sequence_parallel_requires_tp_gt_1() -> None:
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     parallel = ParallelConfig(sequence_parallel=True, tensor_model_parallel_size=1)
     with pytest.raises(ValueError, match="sequence_parallel requires"):
         validate_parallel_config(model, parallel)
@@ -204,7 +225,7 @@ def test_invalid_ep_when_world_not_divisible() -> None:
     from projection import load_model_config
     from projection.parallel.ranks import validate_parallel_config
 
-    model = load_model_config("deepseek_v2_lite")
+    model = load_model_config("deepseek-ai/DeepSeek-V2-Lite")
     parallel = ParallelConfig(data_parallel_size=3, expert_model_parallel_size=2)
     with pytest.raises(ValueError, match="world_size=3"):
         validate_parallel_config(model, parallel)
@@ -217,7 +238,7 @@ def test_rank_outside_world_raises() -> None:
 
 
 def test_per_rank_param_count_halves_with_tp2() -> None:
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     parallel = ParallelConfig(tensor_model_parallel_size=2)
     workload = Workload(seq_length=8192, micro_batch_size=1, global_batch_size=64)
     trainer = Trainer(model, parallel, workload, global_rank=0)

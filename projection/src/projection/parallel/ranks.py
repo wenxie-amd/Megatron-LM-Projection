@@ -123,8 +123,11 @@ def validate_parallel_config(model: ModelConfig, parallel: ParallelConfig) -> No
         raise ValueError("moe_folding can only be enabled for MoE models")
 
     if layout is not None:
-        if len(layout) != pp:
-            raise ValueError(f"pipeline_model_parallel_layout must have {pp} entries (got {len(layout)})")
+        expected = pp * (vpp or 1)
+        if len(layout) != expected:
+            raise ValueError(
+                f"pipeline_model_parallel_layout must have pp*vpp={expected} entries (got {len(layout)})"
+            )
         if sum(layout) != num_layers:
             raise ValueError(
                 f"pipeline_model_parallel_layout sums to {sum(layout)} but num_layers={num_layers}"
@@ -294,13 +297,19 @@ def decompose_rank(global_rank: int, parallel: ParallelConfig) -> RankCoord:
 
 
 def layers_per_pp_stage(model: ModelConfig, parallel: ParallelConfig) -> list[int]:
-    """Returns the layer count for each PP stage (length == pp_size).
+    """Layer count owned by each PP stage (length == pp_size).
 
+    For layout mode with ``vpp > 1``, each PP rank owns ``vpp`` consecutive
+    chunks from the layout; the per-stage count is the sum of those chunks.
     Assumes :func:`validate_parallel_config` has already been called.
     """
-    if parallel.pipeline_model_parallel_layout is not None:
-        return list(parallel.pipeline_model_parallel_layout)
     pp = parallel.pipeline_model_parallel_size
+    vpp = parallel.virtual_pipeline_model_parallel_size or 1
+    layout = parallel.pipeline_model_parallel_layout
+    if layout is not None:
+        if vpp <= 1:
+            return list(layout)
+        return [sum(layout[i * vpp : (i + 1) * vpp]) for i in range(pp)]
     per_stage = model.architecture.num_layers // pp
     return [per_stage] * pp
 

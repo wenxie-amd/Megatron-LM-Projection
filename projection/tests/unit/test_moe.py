@@ -11,7 +11,10 @@ from projection import ParallelConfig, Precision, Trainer, Workload, load_model_
 from projection.core.modules import MoEModule
 
 FIXTURE = (
-    Path(__file__).resolve().parent.parent / "fixtures" / "deepseek_v2_lite" / "default_bf16_tp1_pp1_ep1.json"
+    Path(__file__).resolve().parent.parent
+    / "fixtures"
+    / "deepseek-ai__DeepSeek-V2-Lite"
+    / "default_bf16_tp1_pp1_ep1.json"
 )
 
 
@@ -45,14 +48,14 @@ def test_deepseek_v2_lite_param_breakdown() -> None:
 
 def test_deepseek_v2_lite_moe_layer_components() -> None:
     """The routed expert size and MoE block size are derivable from the YAML alone."""
-    model = load_model_config("deepseek_v2_lite")
+    model = load_model_config("deepseek-ai/DeepSeek-V2-Lite")
     moe_block = MoEModule(model)
     assert moe_block.routed_expert_param_count() == 8_650_752
     assert moe_block.total_full_param_count() == 571_080_704
 
 
 def test_ep_shards_routed_experts() -> None:
-    model = load_model_config("deepseek_v2_lite")
+    model = load_model_config("deepseek-ai/DeepSeek-V2-Lite")
     moe_block = MoEModule(model)
     full = moe_block.param_count(ep_size=1)
     sharded = moe_block.param_count(ep_size=8)
@@ -66,7 +69,7 @@ def test_ep_shards_routed_experts() -> None:
 
 
 def test_ep_must_divide_num_experts() -> None:
-    model = load_model_config("deepseek_v2_lite")
+    model = load_model_config("deepseek-ai/DeepSeek-V2-Lite")
     moe = MoEModule(model)
     with pytest.raises(ValueError, match="divisible"):
         moe.param_count(ep_size=7)
@@ -74,7 +77,7 @@ def test_ep_must_divide_num_experts() -> None:
 
 def test_pp_splits_layers_with_dense_first() -> None:
     """With PP=3 and 27 layers, the first PP rank owns the dense layer + 8 MoE layers."""
-    model = load_model_config("deepseek_v2_lite")
+    model = load_model_config("deepseek-ai/DeepSeek-V2-Lite")
     parallel = ParallelConfig(pipeline_model_parallel_size=3, expert_model_parallel_size=1)
     workload = Workload(seq_length=4096, micro_batch_size=1, global_batch_size=64)
 

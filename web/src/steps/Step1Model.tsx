@@ -75,6 +75,13 @@ export function Step1Model() {
             <h3>{effectiveModelName(state)}</h3>
             {isProxyModel(state) && <span className="proxy-badge">proxy</span>}
           </div>
+          {state.selectedModel && state.selectedModel.includes("/") && (
+            <p className="hf-link">
+              <a href={`https://huggingface.co/${state.selectedModel}`} target="_blank" rel="noreferrer">
+                View on HuggingFace ↗
+              </a>
+            </p>
+          )}
           {config.description && <p className="description">{config.description}</p>}
 
           <div className="config-grid">

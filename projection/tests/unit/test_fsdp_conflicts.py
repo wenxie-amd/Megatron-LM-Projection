@@ -10,14 +10,14 @@ from projection.parallel.ranks import validate_parallel_config
 
 
 def test_torch_fsdp2_incompatible_with_pp() -> None:
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     parallel = ParallelConfig(optimizer_kind=OptimizerKind.TORCH_FSDP2, pipeline_model_parallel_size=2)
     with pytest.raises(ValueError, match="torch_fsdp2.*pipeline"):
         validate_parallel_config(model, parallel)
 
 
 def test_megatron_fsdp_incompatible_with_pp() -> None:
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     parallel = ParallelConfig(optimizer_kind=OptimizerKind.MEGATRON_FSDP, pipeline_model_parallel_size=4)
     with pytest.raises(ValueError, match="megatron_fsdp.*pipeline"):
         validate_parallel_config(model, parallel)
@@ -25,7 +25,7 @@ def test_megatron_fsdp_incompatible_with_pp() -> None:
 
 def test_torch_fsdp2_incompatible_with_vpp() -> None:
     """FSDP2 + VPP is rejected even though FSDP2's own PP rule fires first."""
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     parallel = ParallelConfig(
         optimizer_kind=OptimizerKind.TORCH_FSDP2,
         pipeline_model_parallel_size=2,
@@ -37,7 +37,7 @@ def test_torch_fsdp2_incompatible_with_vpp() -> None:
 
 
 def test_fsdp_shards_params_across_dp() -> None:
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     workload = Workload(seq_length=2048, micro_batch_size=1, global_batch_size=64)
 
     no_dp = ParallelConfig(optimizer_kind=OptimizerKind.TORCH_FSDP2, data_parallel_size=1)
@@ -49,7 +49,7 @@ def test_fsdp_shards_params_across_dp() -> None:
 
 
 def test_distributed_optimizer_does_not_shard_params_by_dp() -> None:
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     workload = Workload(seq_length=2048, micro_batch_size=1, global_batch_size=64)
 
     no_dp = ParallelConfig(optimizer_kind=OptimizerKind.DISTRIBUTED_OPTIMIZER, data_parallel_size=1)
@@ -62,7 +62,7 @@ def test_distributed_optimizer_does_not_shard_params_by_dp() -> None:
 
 
 def test_moe_ep_must_divide_num_routed_experts() -> None:
-    model = load_model_config("deepseek_v2_lite")
+    model = load_model_config("deepseek-ai/DeepSeek-V2-Lite")
     parallel = ParallelConfig(expert_model_parallel_size=7)
     with pytest.raises(ValueError, match="num_routed_experts.*divisible"):
         validate_parallel_config(model, parallel)

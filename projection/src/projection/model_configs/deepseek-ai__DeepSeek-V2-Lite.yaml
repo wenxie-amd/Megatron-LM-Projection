@@ -1,5 +1,5 @@
-name: deepseek_v2_lite
-description: DeepSeek-V2-Lite (16B total / 2.4B activated). MoE + MLA, with the first layer dense.
+name: deepseek-ai/DeepSeek-V2-Lite
+description: DeepSeek-V2-Lite (16B total / 2.4B activated). MoE + MLA, first layer dense.
 
 architecture:
   num_layers: 27

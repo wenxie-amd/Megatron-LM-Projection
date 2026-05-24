@@ -9,7 +9,7 @@ from projection.parallel.ranks import validate_parallel_config
 
 
 def _setup(parallel: ParallelConfig) -> Trainer:
-    model = load_model_config("deepseek_v2_lite")
+    model = load_model_config("deepseek-ai/DeepSeek-V2-Lite")
     workload = Workload(seq_length=2048, micro_batch_size=1, global_batch_size=64)
     return Trainer(model, parallel, workload)
 
@@ -36,7 +36,7 @@ def test_moe_folding_on_uses_explicit_etp() -> None:
 
 def test_moe_folding_on_requires_moe_model() -> None:
     """``moe_folding=True`` on a dense model should be rejected."""
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     parallel = ParallelConfig(moe_folding=True)
     workload = Workload(seq_length=1024, micro_batch_size=1, global_batch_size=64)
     with pytest.raises(ValueError, match="moe_folding can only be enabled for MoE models"):
@@ -45,7 +45,7 @@ def test_moe_folding_on_requires_moe_model() -> None:
 
 def test_world_divisibility_for_expert_groups() -> None:
     """world must be divisible by ETP*EP*PP (or vice versa for fractional EDP)."""
-    model = load_model_config("deepseek_v2_lite")
+    model = load_model_config("deepseek-ai/DeepSeek-V2-Lite")
     # ETP=4 divides moe_ffn=1408; EP=2 divides num_routed=64. world=2*1*1*6=12.
     # ETP*EP*PP = 4*2*1 = 8. 12 % 8 = 4, 8 % 12 = 8 → neither divides → invalid.
     parallel = ParallelConfig(

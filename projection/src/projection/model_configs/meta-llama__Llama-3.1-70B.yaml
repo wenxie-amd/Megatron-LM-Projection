@@ -1,0 +1,31 @@
+name: meta-llama/Llama-3.1-70B
+description: Llama 3.1 70B (Meta). 8K context base, RoPE base 500k.
+
+architecture:
+  num_layers: 80
+  hidden_size: 8192
+  ffn_hidden_size: 28672
+  vocab_size: 128256
+  max_position_embeddings: 131072
+  untie_embeddings_and_output_weights: true
+  make_vocab_size_divisible_by: 128
+
+attention:
+  num_attention_heads: 64
+  num_query_groups: 8
+  kv_channels: 128
+  attention_dropout: 0.0
+  add_qkv_bias: false
+
+mlp:
+  swiglu: true
+  add_bias_linear: false
+
+norm:
+  normalization: RMSNorm
+  layernorm_epsilon: 1.0e-5
+
+position_embedding:
+  position_embedding_type: rope
+  rotary_base: 500000
+  rotary_percent: 1.0

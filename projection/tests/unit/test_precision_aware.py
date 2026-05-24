@@ -6,7 +6,7 @@ from projection import ParallelConfig, Trainer, Workload, load_model_config
 
 
 def _trainer(parallel: ParallelConfig) -> Trainer:
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     workload = Workload(seq_length=2048, micro_batch_size=1, global_batch_size=64)
     return Trainer(model, parallel, workload)
 

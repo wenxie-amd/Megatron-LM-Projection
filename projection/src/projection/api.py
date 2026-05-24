@@ -124,7 +124,7 @@ def run_projection(payload: dict[str, Any]) -> dict[str, Any]:
     Expected payload shape::
 
         {
-          "model": "llama3.1_8B" | <inline model dict>,
+          "model": "meta-llama/Llama-3.1-8B" | <inline model dict>,
           "parallel": { ...ParallelConfig fields... },
           "workload": { ...Workload fields... },
           "ranks": [0, 1, 4],          # up to MAX_RANKS

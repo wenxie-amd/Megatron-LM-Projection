@@ -1,4 +1,4 @@
-name: llama3.1_8B
+name: meta-llama/Llama-3.1-8B
 description: Llama 3.1 8B (Meta).
 
 architecture:

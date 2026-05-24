@@ -1,0 +1,41 @@
+name: openai/gpt-oss-120b
+description: OpenAI gpt-oss-120b. MoE with 128 routed experts, top-4, GQA.
+
+architecture:
+  num_layers: 36
+  hidden_size: 2880
+  ffn_hidden_size: 2880
+  vocab_size: 201088
+  max_position_embeddings: 131072
+  untie_embeddings_and_output_weights: true
+  make_vocab_size_divisible_by: 128
+
+attention:
+  num_attention_heads: 64
+  num_query_groups: 8
+  kv_channels: 64
+  attention_dropout: 0.0
+  add_qkv_bias: false
+
+mlp:
+  swiglu: true
+  add_bias_linear: false
+
+moe:
+  enabled: true
+  moe_ffn_hidden_size: 2880
+  num_routed_experts: 128
+  num_shared_experts: 0
+  moe_router_topk: 4
+  moe_layer_freq: 1
+  first_k_dense_replace: 0
+  add_router_bias: false
+
+norm:
+  normalization: RMSNorm
+  layernorm_epsilon: 1.0e-5
+
+position_embedding:
+  position_embedding_type: rope
+  rotary_base: 150000
+  rotary_percent: 1.0

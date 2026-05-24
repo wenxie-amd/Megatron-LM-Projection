@@ -211,6 +211,17 @@
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
+.hf-link {
+  margin: 0.2rem 0 0.5rem;
+  font-size: 0.85rem;
+}
+.hf-link a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.hf-link a:hover {
+  text-decoration: underline;
+}
 .description {
   margin: 0.25rem 0 1rem;
   color: var(--muted);

@@ -29,11 +29,15 @@ def list_packaged_yamls(subpackage: str) -> list[str]:
 
 
 def load_model_config(name_or_path: str | Path) -> ModelConfig:
-    """Load a model config either from a built-in name (e.g. ``llama3.1_8B``) or a YAML path.
+    """Load a model config from a built-in HF-style name or a YAML path.
 
-    Built-in name resolution: strip ``.yaml``, lowercase, replace ``.`` and ``-`` with ``_``.
+    Built-in lookup: ``meta-llama/Llama-3.1-8B`` → ``meta-llama__Llama-3.1-8B.yaml``
+    bundled under :mod:`projection.model_configs`.
+
+    Path lookup is triggered by either a :class:`Path` instance or a string that
+    ends with ``.yaml``.
     """
-    if isinstance(name_or_path, Path) or "/" in str(name_or_path) or str(name_or_path).endswith(".yaml"):
+    if isinstance(name_or_path, Path) or str(name_or_path).endswith(".yaml"):
         data = load_yaml(name_or_path)
     else:
         filename = _builtin_model_filename(name_or_path)
@@ -42,8 +46,8 @@ def load_model_config(name_or_path: str | Path) -> ModelConfig:
 
 
 def _builtin_model_filename(name: str) -> str:
-    canonical = name.lower().replace(".", "_").replace("-", "_")
-    return f"{canonical}.yaml"
+    """Map an HF-style ``org/model`` name to ``org__model.yaml``."""
+    return f"{name.replace('/', '__')}.yaml"
 
 
 def load_gpu_spec(name_or_path: str | Path) -> GPUSpec:
@@ -56,7 +60,7 @@ def load_gpu_spec(name_or_path: str | Path) -> GPUSpec:
 
 
 def list_builtin_models() -> list[str]:
-    return [p.removesuffix(".yaml") for p in list_packaged_yamls("model_configs")]
+    return [p.removesuffix(".yaml").replace("__", "/") for p in list_packaged_yamls("model_configs")]
 
 
 def list_builtin_gpus() -> list[str]:

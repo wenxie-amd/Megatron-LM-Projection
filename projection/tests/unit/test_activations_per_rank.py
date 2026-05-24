@@ -39,7 +39,7 @@ def test_interleaved_penalty_matches_megatron_formula() -> None:
 
 
 def test_rank0_holds_more_activation_than_last_rank() -> None:
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     parallel = ParallelConfig(pipeline_model_parallel_size=4)
     workload = Workload(seq_length=8192, micro_batch_size=1, global_batch_size=64)
 
@@ -50,7 +50,7 @@ def test_rank0_holds_more_activation_than_last_rank() -> None:
 
 
 def test_vpp_uniformly_increases_activation_over_no_vpp() -> None:
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     workload = Workload(seq_length=8192, micro_batch_size=1, global_batch_size=64)
     no_vpp = ParallelConfig(pipeline_model_parallel_size=4)
     with_vpp = ParallelConfig(pipeline_model_parallel_size=4, virtual_pipeline_model_parallel_size=2)
@@ -63,7 +63,7 @@ def test_vpp_uniformly_increases_activation_over_no_vpp() -> None:
 
 def test_only_rank0_carries_embedding_overhead() -> None:
     """With pp>1, only the first PP rank should see the embedding/dropout contribution."""
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     parallel = ParallelConfig(pipeline_model_parallel_size=4)
     workload = Workload(seq_length=8192, micro_batch_size=1, global_batch_size=64)
     # Same num_layers_on_rank (=8) for rank 0 and rank 1, but rank 0 has more
@@ -75,7 +75,7 @@ def test_only_rank0_carries_embedding_overhead() -> None:
 
 
 def test_only_last_rank_carries_output_layer() -> None:
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     parallel = ParallelConfig(pipeline_model_parallel_size=4)
     workload = Workload(seq_length=8192, micro_batch_size=1, global_batch_size=64)
 
@@ -90,7 +90,7 @@ def test_only_last_rank_carries_output_layer() -> None:
 
 def test_pp1_matches_megatron_no_pp_formula() -> None:
     """At PP=1 the per-rank formula collapses to (layer × num_layers + emb + output) for one microbatch."""
-    model = load_model_config("llama3.1_8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")
     workload = Workload(seq_length=8192, micro_batch_size=1, global_batch_size=64)
     parallel = ParallelConfig()
     bytes_ = Trainer(model, parallel, workload).report().memory.activation_bytes
