@@ -28,12 +28,15 @@ export interface ParallelConfig {
   optimizer_main_grad_dtype?: OptimizerDtype;
   optimizer_exp_avg_dtype?: OptimizerDtype;
   optimizer_exp_avg_sq_dtype?: OptimizerDtype;
+  moe_folding?: boolean;
+  expert_tensor_parallel_size?: number | null;
 }
 
 export interface DerivedConfig {
   world_size: number;
   data_parallel_size: number;
   expert_data_parallel_size: number;
+  expert_tensor_parallel_size: number;
   gradient_accumulation_steps: number;
 }
 

@@ -123,6 +123,15 @@ export class Bridge {
     return this.callPyFunction<DerivedConfig>("compute_derived", [input]);
   }
 
+  computePerRankLayers(input: {
+    model: string | Record<string, unknown>;
+    parallel: Record<string, unknown>;
+    workload: Record<string, unknown>;
+    pp_rank: number;
+  }): { pp_rank: number; total_num_layers: number; total_recompute_num_layers: number } {
+    return this.callPyFunction("compute_per_rank_layers", [input]);
+  }
+
   validateConfig(input: ProjectionInput): ValidationResult {
     return this.callPyFunction<ValidationResult>("validate_config", [input]);
   }

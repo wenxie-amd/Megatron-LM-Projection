@@ -24,7 +24,11 @@ from projection.loader import (
     load_gpu_spec,
     load_model_config,
 )
-from projection.parallel.ranks import gradient_accumulation_steps
+from projection.parallel.ranks import (
+    gradient_accumulation_steps,
+    total_layers_on_rank,
+    total_recompute_layers_on_rank,
+)
 from projection.script_gen import generate_megatron_script
 
 MAX_RANKS = 8
@@ -160,6 +164,7 @@ def run_projection(payload: dict[str, Any]) -> dict[str, Any]:
             "world_size": parallel.world_size,
             "data_parallel_size": parallel.data_parallel_size,
             "expert_data_parallel_size": parallel.expert_data_parallel_size,
+            "expert_tensor_parallel_size": parallel.effective_expert_tensor_parallel_size,
             "gradient_accumulation_steps": gradient_accumulation_steps(parallel, workload),
         },
         "rank_reports": rank_reports,
@@ -200,7 +205,33 @@ def compute_derived(payload: dict[str, Any]) -> dict[str, Any]:
         "world_size": parallel.world_size,
         "data_parallel_size": parallel.data_parallel_size,
         "expert_data_parallel_size": parallel.expert_data_parallel_size,
+        "expert_tensor_parallel_size": parallel.effective_expert_tensor_parallel_size,
         "gradient_accumulation_steps": gradient_accumulation_steps(parallel, workload),
+    }
+
+
+def compute_per_rank_layers(payload: dict[str, Any]) -> dict[str, Any]:
+    """For Step 3's per-rank layer / recompute display.
+
+    Payload requires ``model``, ``parallel``, ``workload`` plus ``pp_rank``
+    (defaults to 0). Returns this PP rank's total layer count and how many of
+    them are recomputed under the current workload.
+    """
+    model_field = payload["model"]
+    model_config = (
+        load_model_config(model_field)
+        if isinstance(model_field, str)
+        else ModelConfig.model_validate(model_field)
+    )
+    parallel = ParallelConfig.model_validate(payload["parallel"])
+    workload = Workload.model_validate(payload["workload"])
+    pp_rank = int(payload.get("pp_rank", 0))
+    return {
+        "pp_rank": pp_rank,
+        "total_num_layers": total_layers_on_rank(model_config, parallel, pp_rank),
+        "total_recompute_num_layers": total_recompute_layers_on_rank(
+            model_config, parallel, workload, pp_rank
+        ),
     }
 
 
@@ -269,6 +300,7 @@ def _asdict_safe(obj: Any) -> dict[str, Any]:
 __all__ = [
     "MAX_RANKS",
     "compute_derived",
+    "compute_per_rank_layers",
     "generate_script",
     "get_gpu_spec",
     "get_model_breakdown",

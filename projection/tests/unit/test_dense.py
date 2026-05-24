@@ -200,13 +200,13 @@ def test_decompose_rank_with_edp_greater_than_1() -> None:
     assert coords == [(0, 0), (1, 0), (0, 1), (1, 1), (0, 2), (1, 2), (0, 3), (1, 3)]
 
 
-def test_invalid_ep_when_not_dividing_cp_dp() -> None:
+def test_invalid_ep_when_world_not_divisible() -> None:
     from projection import load_model_config
     from projection.parallel.ranks import validate_parallel_config
 
     model = load_model_config("deepseek_v2_lite")
     parallel = ParallelConfig(data_parallel_size=3, expert_model_parallel_size=2)
-    with pytest.raises(ValueError, match="cp\\*dp"):
+    with pytest.raises(ValueError, match="world_size=3"):
         validate_parallel_config(model, parallel)
 
 

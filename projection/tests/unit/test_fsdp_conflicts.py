@@ -24,11 +24,15 @@ def test_megatron_fsdp_incompatible_with_pp() -> None:
 
 
 def test_torch_fsdp2_incompatible_with_vpp() -> None:
+    """FSDP2 + VPP is rejected even though FSDP2's own PP rule fires first."""
     model = load_model_config("llama3.1_8B")
     parallel = ParallelConfig(
-        optimizer_kind=OptimizerKind.TORCH_FSDP2, virtual_pipeline_model_parallel_size=2
+        optimizer_kind=OptimizerKind.TORCH_FSDP2,
+        pipeline_model_parallel_size=2,
+        virtual_pipeline_model_parallel_size=2,
     )
-    with pytest.raises(ValueError, match="torch_fsdp2.*virtual"):
+    # FSDP2 already conflicts with PP > 1; the test enforces that combination.
+    with pytest.raises(ValueError, match="torch_fsdp2.*pipeline"):
         validate_parallel_config(model, parallel)
 
 

@@ -294,61 +294,162 @@
   cursor: not-allowed;
 }
 
-.rank-tables {
+.derived-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 1rem;
-  margin-top: 1rem;
+  grid-template-rows: auto auto;
+  grid-auto-flow: row;
+  column-gap: 1rem;
+  row-gap: 0.1rem;
+  border: 1px solid var(--accent);
+  background: var(--accent-bg, rgba(59, 130, 246, 0.08));
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0 1rem;
+  font-variant-numeric: tabular-nums;
 }
-.rank-card {
+.derived-strip-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  text-align: center;
+}
+.derived-strip-value {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--accent);
+  font-family: ui-monospace, Consolas, monospace;
+  text-align: center;
+}
+
+.per-rank-recompute {
+  margin-top: 0.75rem;
+}
+.per-rank-recompute .per-rank-pp-select {
+  margin-bottom: 0.5rem;
+}
+.derived-grid.compact .derived-cell {
+  padding: 0.45rem 0.6rem;
+}
+.derived-grid.compact .derived-value {
+  font-size: 1rem;
+}
+
+.combined-breakdown {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+  font-variant-numeric: tabular-nums;
+}
+.combined-breakdown th,
+.combined-breakdown td {
+  font-size: 0.85rem;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  font-family: ui-monospace, Consolas, monospace;
+}
+.combined-breakdown thead th {
+  background: var(--bg-section);
+  text-align: center;
+  font-family: inherit;
+  font-weight: 500;
+  border-bottom: none;
+}
+.combined-breakdown thead .rank-head-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-h, black);
+}
+.combined-breakdown thead .rank-head-coord {
+  font-size: 0.7rem;
+  color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+  margin-top: 0.15rem;
+}
+.combined-breakdown thead tr.sub-head th {
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border);
+}
+.combined-breakdown tbody th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 400;
+  font-family: inherit;
+}
+.combined-breakdown td.bytes-col {
+  text-align: center;
+  padding-right: 0.25rem;
+  min-width: 5.5rem;
+}
+.combined-breakdown td.pct-col,
+.combined-breakdown th.pct-col {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.8rem;
+  padding-left: 0.25rem;
+  width: 3.5rem;
+  min-width: 3.5rem;
+}
+.combined-breakdown tr.total th,
+.combined-breakdown tr.total td {
+  font-weight: 600;
+  background: var(--bg-section);
+  color: black;
+}
+.combined-breakdown tr.total td.pct-col {
+  color: black;
+}
+
+.calc-details {
+  margin-top: 1.5rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.75rem 1rem;
-  background: var(--bg-section);
+  background: white;
 }
-.rank-coord {
-  color: var(--muted);
-  font-size: 0.8rem;
-  font-weight: normal;
+.calc-details > summary {
+  cursor: pointer;
+  font-weight: 500;
+  padding: 0.25rem 0;
+  list-style: revert;
 }
-.rank-partition {
-  color: var(--muted);
-  font-size: 0.8rem;
-  margin-bottom: 0.5rem;
+.calc-details .calc-rank-pick {
+  margin: 0.75rem 0;
 }
-.memory-table {
-  width: 100%;
-  border-collapse: collapse;
+.calc-section {
+  border-top: 1px dashed var(--border);
+  padding: 0.5rem 0 0.75rem;
 }
-.memory-table th,
-.memory-table td {
+.calc-section h4 {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+  color: var(--accent);
+}
+.calc-section ol {
+  margin: 0;
+  padding-left: 1.2rem;
   font-size: 0.85rem;
-  padding: 0.2rem 0;
-  border-bottom: 1px dashed #eee;
-  text-align: left;
-  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
 }
-.memory-table th {
-  color: var(--muted);
-  font-weight: 400;
+.calc-section ol li {
+  margin: 0.15rem 0;
 }
-.memory-table td {
+.calc-section code {
+  background: var(--bg-section);
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
   font-family: ui-monospace, Consolas, monospace;
-  text-align: right;
+  font-size: 0.85em;
 }
-.memory-table .total th,
-.memory-table .total td {
-  font-weight: 600;
-  color: black;
+.calc-total h4 {
+  color: var(--text-h, black);
 }
-.memory-table .pct-col {
-  color: var(--muted);
-  font-size: 0.8rem;
-  text-align: right;
-  width: 4rem;
-}
-.memory-table .total .pct-col {
-  color: black;
+.calc-total .error-text {
+  color: var(--error);
 }
 
 .placeholder {
@@ -405,6 +506,33 @@
   background: var(--bg-section);
   border: 1px dashed var(--border);
   border-radius: 6px;
+}
+
+.folded-strategy {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+.folded-side {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-section);
+}
+.folded-side h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+.folded-side .derived-cell.inline {
+  background: white;
+}
+@media (max-width: 720px) {
+  .folded-strategy {
+    grid-template-columns: 1fr;
+  }
 }
 
 .hint {

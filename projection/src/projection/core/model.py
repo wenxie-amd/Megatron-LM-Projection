@@ -52,14 +52,47 @@ class TransformerModel:
         )
 
     def param_count(self) -> int:
-        total = 0
+        dense, routed = self.param_count_split()
+        return dense + routed
+
+    def param_count_split(self) -> tuple[int, int]:
+        """Return ``(dense_params, routed_expert_params)`` on this rank.
+
+        ``dense_params`` includes the embedding, attention (Q/K/V/O), MLPs in
+        dense layers, the MoE block's router + shared experts in MoE layers,
+        all norms, the final norm and the output projection.
+
+        ``routed_params`` is the routed-expert weights only (sharded by EP).
+        """
+        dense = 0
         if self.embedding is not None:
-            total += self.embedding.param_count(self._tp)
-        total += self.block.param_count(ep_size=self._ep)
+            dense += self.embedding.param_count(self._tp)
         if self.final_norm is not None:
-            total += self.final_norm.param_count()
-        total += self.output_projection_size
-        return total
+            dense += self.final_norm.param_count()
+        dense += self.output_projection_size
+
+        dense_layer = self.block.dense_layer
+        moe_layer = self.block.moe_layer
+        if dense_layer is not None:
+            dense += self.block.num_dense_on_rank * dense_layer.param_count(ep_size=self._ep)
+
+        routed = 0
+        if moe_layer is not None:
+            moe_block = moe_layer.mlp
+            from projection.core.modules import MoEModule
+
+            assert isinstance(moe_block, MoEModule), "MoE layer must own a MoEModule"
+            # Routed experts: sharded by EP.
+            routed_per_layer = (
+                moe_block.cfg.num_routed_experts // max(1, self._ep)
+            ) * moe_block.routed_expert_param_count()
+            # Everything else in the MoE layer counts as dense (norms + attention +
+            # router + shared experts).
+            non_routed_per_layer = moe_layer.param_count(ep_size=self._ep) - routed_per_layer
+            dense += self.block.num_moe_on_rank * non_routed_per_layer
+            routed += self.block.num_moe_on_rank * routed_per_layer
+
+        return dense, routed
 
     def param_breakdown(self) -> list[ModuleParams]:
         out: list[ModuleParams] = []

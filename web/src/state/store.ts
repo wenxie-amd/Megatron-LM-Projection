@@ -118,10 +118,12 @@ export const DEFAULT_PARALLEL: ParallelConfig = {
   optimizer_main_grad_dtype: "fp32",
   optimizer_exp_avg_dtype: "fp32",
   optimizer_exp_avg_sq_dtype: "fp32",
+  moe_folding: false,
+  expert_tensor_parallel_size: null,
 };
 
 export const DEFAULT_WORKLOAD: Workload = {
-  seq_length: 8192,
+  seq_length: 4096,
   micro_batch_size: 1,
   global_batch_size: 64,
   recompute_granularity: "none",
@@ -200,13 +202,26 @@ export function reducer(state: State, action: Action): State {
       };
     case "BRIDGE_ERROR":
       return { ...state, bridgeStatus: "error", bridgeError: action.error };
-    case "SELECT_MODEL":
+    case "SELECT_MODEL": {
+      // Reset MoE-only knobs when switching to a dense model so they don't
+      // linger as invalid state.
+      const isMoE = !!action.config?.moe?.enabled;
+      const parallel = isMoE
+        ? state.parallel
+        : {
+            ...state.parallel,
+            moe_folding: false,
+            expert_tensor_parallel_size: null,
+            expert_model_parallel_size: 1,
+          };
       return {
         ...state,
         selectedModel: action.name,
         modelConfig: action.config,
         numLayersOverride: null,
+        parallel,
       };
+    }
     case "OVERRIDE_NUM_LAYERS":
       return { ...state, numLayersOverride: action.value };
     case "SELECT_GPU_PRIMARY":
@@ -313,7 +328,15 @@ export interface DerivedView {
   world_size: number;
   data_parallel_size: number;
   expert_data_parallel_size: number;
+  expert_tensor_parallel_size: number;
   gradient_accumulation_steps: number;
+}
+
+export function effectiveExpertTp(state: State): number {
+  if (!state.parallel.moe_folding || !state.parallel.expert_tensor_parallel_size) {
+    return state.parallel.tensor_model_parallel_size;
+  }
+  return Math.max(1, state.parallel.expert_tensor_parallel_size);
 }
 
 export function deriveView(state: State): DerivedView {
@@ -321,20 +344,35 @@ export function deriveView(state: State): DerivedView {
   const pp = state.parallel.pipeline_model_parallel_size;
   const cp = state.parallel.context_parallel_size;
   const ep = state.parallel.expert_model_parallel_size;
+  const etp = effectiveExpertTp(state);
   const denom = tp * pp * cp;
   const dpRaw = state.numGpus > 0 && denom > 0 && state.numGpus % denom === 0 ? state.numGpus / denom : 0;
   const dp = dpRaw || 0;
-  // EDP = cp * dp / ep (Megatron's expert RankGenerator with cp=1 and dp=edp on the same world).
-  const edpNumer = cp * dp;
-  const edp = ep > 0 && edpNumer % ep === 0 ? edpNumer / ep : 0;
+  // EDP = world / (ETP × EP × PP). Allow fractional values (1/n) when EP > attn DP.
+  const edpDenom = etp * ep * pp;
+  let edp = 0;
+  if (ep > 0 && edpDenom > 0 && state.numGpus > 0) {
+    if (state.numGpus % edpDenom === 0) edp = state.numGpus / edpDenom;
+    else if (edpDenom % state.numGpus === 0) edp = 1 / (edpDenom / state.numGpus);
+  }
+  // GA = GBS / (ADP × MBS), where ADP is the attention data-parallel size.
   const perStep = dp * state.workload.micro_batch_size;
   const ga = perStep > 0 && state.workload.global_batch_size % perStep === 0 ? state.workload.global_batch_size / perStep : 0;
   return {
     world_size: state.numGpus,
     data_parallel_size: dp,
     expert_data_parallel_size: edp,
+    expert_tensor_parallel_size: etp,
     gradient_accumulation_steps: ga,
   };
+}
+
+/** Render EDP as "1/n" when < 1, else integer, else "—". */
+export function formatEdp(edp: number): string {
+  if (edp <= 0) return "—";
+  if (edp >= 1) return String(Math.round(edp));
+  const denom = Math.round(1 / edp);
+  return `1/${denom}`;
 }
 
 export function clientValidate(state: State): string[] {
@@ -368,13 +406,22 @@ export function clientValidate(state: State): string[] {
           `expert_model_parallel_size=${ep}.`,
       );
     }
-    const dpForEp = deriveView(state).data_parallel_size;
-    const edpNumer = cp * dpForEp;
-    if (dpForEp > 0 && edpNumer % ep !== 0) {
+    const etpForCheck = effectiveExpertTp(state);
+    const edpDenom = etpForCheck * ep * state.parallel.pipeline_model_parallel_size;
+    if (
+      state.numGpus > 0 &&
+      edpDenom > 0 &&
+      state.numGpus % edpDenom !== 0 &&
+      edpDenom % state.numGpus !== 0
+    ) {
       errors.push(
-        `expert_model_parallel_size=${ep} must divide cp*dp=${edpNumer} so EDP = cp*dp/ep is an integer.`,
+        `world_size=${state.numGpus} and ETP*EP*PP=${etpForCheck}*${ep}*${state.parallel.pipeline_model_parallel_size}=${edpDenom} ` +
+          `must divide one another so EDP = world/(ETP*EP*PP) is an integer (≥1) or a clean reciprocal (1/n).`,
       );
     }
+  }
+  if (state.parallel.moe_folding && !state.modelConfig?.moe?.enabled) {
+    errors.push("moe_folding can only be enabled for MoE models.");
   }
   if (
     state.parallel.optimizer_kind === "torch_fsdp2" &&
@@ -393,6 +440,42 @@ export function clientValidate(state: State): string[] {
     state.parallel.tensor_model_parallel_size === 1
   ) {
     errors.push("sequence_parallel requires tensor_model_parallel_size > 1.");
+  }
+  const vpp = state.parallel.virtual_pipeline_model_parallel_size;
+  if (vpp && vpp > 1 && state.parallel.pipeline_model_parallel_size <= 1) {
+    errors.push("virtual_pipeline_model_parallel_size > 1 requires pipeline_model_parallel_size > 1.");
+  }
+  if (cp > 1 && state.workload.seq_length % (cp * 2) !== 0) {
+    errors.push(
+      `seq_length=${state.workload.seq_length} must be a multiple of 2 × context_parallel_size = ${2 * cp}.`,
+    );
+  }
+  if (state.modelConfig?.attention && state.modelConfig?.architecture) {
+    const att = state.modelConfig.attention;
+    const arch = state.modelConfig.architecture;
+    if (att.num_attention_heads % tp !== 0) {
+      errors.push(
+        `num_attention_heads=${att.num_attention_heads} must be divisible by tensor_model_parallel_size=${tp}.`,
+      );
+    }
+    if (att.num_query_groups && att.num_query_groups % tp !== 0) {
+      errors.push(
+        `num_query_groups=${att.num_query_groups} (GQA) must be divisible by tensor_model_parallel_size=${tp}.`,
+      );
+    }
+    if (arch.ffn_hidden_size % tp !== 0) {
+      errors.push(
+        `ffn_hidden_size=${arch.ffn_hidden_size} must be divisible by tensor_model_parallel_size=${tp}.`,
+      );
+    }
+    if (state.modelConfig.moe?.enabled) {
+      const etpForCheck = effectiveExpertTp(state);
+      if (state.modelConfig.moe.moe_ffn_hidden_size % etpForCheck !== 0) {
+        errors.push(
+          `moe_ffn_hidden_size=${state.modelConfig.moe.moe_ffn_hidden_size} must be divisible by expert_tensor_parallel_size=${etpForCheck}.`,
+        );
+      }
+    }
   }
   if (state.workload.recompute_granularity === "full") {
     if (!state.workload.recompute_method) {

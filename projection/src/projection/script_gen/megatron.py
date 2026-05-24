@@ -150,6 +150,12 @@ def _collect_args(
         args.append(f"--context-parallel-size {parallel.context_parallel_size}")
     if parallel.expert_model_parallel_size > 1:
         args.append(f"--expert-model-parallel-size {parallel.expert_model_parallel_size}")
+    if (
+        parallel.moe_folding
+        and parallel.expert_tensor_parallel_size is not None
+        and parallel.expert_tensor_parallel_size != parallel.tensor_model_parallel_size
+    ):
+        args.append(f"--expert-tensor-parallel-size {parallel.expert_tensor_parallel_size}")
     if parallel.sequence_parallel:
         args.append("--sequence-parallel")
     if parallel.virtual_pipeline_model_parallel_size and parallel.virtual_pipeline_model_parallel_size > 1:

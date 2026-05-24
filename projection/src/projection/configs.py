@@ -192,6 +192,13 @@ class ParallelConfig(BaseModel):
     optimizer_exp_avg_dtype: OptimizerDtype = "fp32"
     optimizer_exp_avg_sq_dtype: OptimizerDtype = "fp32"
 
+    # MoE folding: attention and MoE can have independent distributed strategies.
+    # When ``moe_folding=False`` (default), the MoE block inherits ``tensor_model_parallel_size``.
+    # When True, ``expert_tensor_parallel_size`` may differ, and the resulting expert-data-parallel
+    # group size is ``world / (ETP × EP × PP)`` independent of attention's DP.
+    moe_folding: bool = False
+    expert_tensor_parallel_size: int | None = None
+
     @model_validator(mode="after")
     def _check_pp(self) -> "ParallelConfig":
         if (
@@ -228,14 +235,36 @@ class ParallelConfig(BaseModel):
         )
 
     @property
-    def expert_data_parallel_size(self) -> int:
-        """``EDP = cp * dp / ep`` (matches Megatron's expert RankGenerator)."""
-        if self.expert_model_parallel_size <= 0:
-            return 0
-        numer = self.context_parallel_size * self.data_parallel_size
-        if numer % self.expert_model_parallel_size != 0:
-            return 0
-        return max(1, numer // self.expert_model_parallel_size)
+    def effective_expert_tensor_parallel_size(self) -> int:
+        """``ETP`` — falls back to ``tensor_model_parallel_size`` when MoE folding is off."""
+        if not self.moe_folding or self.expert_tensor_parallel_size is None:
+            return self.tensor_model_parallel_size
+        return max(1, self.expert_tensor_parallel_size)
+
+    @property
+    def expert_data_parallel_size(self) -> float:
+        """``EDP = world / (ETP × EP × PP)`` (matches Megatron's expert RankGenerator).
+
+        Returns a float so we can represent the legal-but-fractional case
+        ``EDP < 1`` (each rank holds ``1/EDP`` expert slices). With MoE folding
+        off and EP ≤ TP×CP×DP this is always a positive integer.
+        """
+        ep = self.expert_model_parallel_size
+        if ep <= 0:
+            return 0.0
+        etp = self.effective_expert_tensor_parallel_size
+        pp = self.pipeline_model_parallel_size
+        denom = etp * ep * pp
+        world = self.world_size
+        if denom <= 0 or world <= 0:
+            return 0.0
+        # Accept either world divisible by denom (EDP ≥ 1 integer) or denom
+        # divisible by world (EDP = 1/n reciprocal); otherwise reject as invalid.
+        if world % denom == 0:
+            return float(world // denom)
+        if denom % world == 0:
+            return 1.0 / (denom // world)
+        return 0.0
 
 
 class TrainingHyperparameters(BaseModel):

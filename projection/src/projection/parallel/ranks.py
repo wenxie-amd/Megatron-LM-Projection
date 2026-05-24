@@ -54,6 +54,39 @@ def validate_parallel_config(model: ModelConfig, parallel: ParallelConfig) -> No
     if parallel.sequence_parallel and parallel.tensor_model_parallel_size == 1:
         raise ValueError("sequence_parallel requires tensor_model_parallel_size > 1")
 
+    if vpp and vpp > 1 and pp <= 1:
+        raise ValueError("virtual_pipeline_model_parallel_size > 1 requires pipeline_model_parallel_size > 1")
+
+    # Megatron requires the partitionable dimensions to be divisible by TP / ETP.
+    tp = parallel.tensor_model_parallel_size
+    att = model.attention
+    if att.kv_channels is None and not att.use_mla:
+        if model.architecture.hidden_size % att.num_attention_heads != 0:
+            raise ValueError(
+                f"hidden_size={model.architecture.hidden_size} must be divisible by "
+                f"num_attention_heads={att.num_attention_heads} (or set kv_channels explicitly)"
+            )
+    if att.num_attention_heads % tp != 0:
+        raise ValueError(
+            f"num_attention_heads={att.num_attention_heads} must be divisible by "
+            f"tensor_model_parallel_size={tp}"
+        )
+    if att.num_query_groups is not None and att.num_query_groups % tp != 0:
+        raise ValueError(
+            f"num_query_groups={att.num_query_groups} (GQA) must be divisible by "
+            f"tensor_model_parallel_size={tp}"
+        )
+    ffn = model.architecture.ffn_hidden_size
+    if ffn % tp != 0:
+        raise ValueError(f"ffn_hidden_size={ffn} must be divisible by tensor_model_parallel_size={tp}")
+    if model.moe.enabled:
+        etp = parallel.effective_expert_tensor_parallel_size
+        moe_ffn = model.moe.moe_ffn_hidden_size
+        if moe_ffn % etp != 0:
+            raise ValueError(
+                f"moe_ffn_hidden_size={moe_ffn} must be divisible by " f"expert_tensor_parallel_size={etp}"
+            )
+
     # Optimizer / sharding conflicts (cross-checked against Megatron's arguments.py).
     if parallel.optimizer_kind is OptimizerKind.TORCH_FSDP2:
         if pp > 1:
@@ -74,12 +107,20 @@ def validate_parallel_config(model: ModelConfig, parallel: ParallelConfig) -> No
                 f"num_routed_experts={model.moe.num_routed_experts} must be divisible by "
                 f"expert_model_parallel_size={parallel.expert_model_parallel_size}"
             )
-        numer = parallel.context_parallel_size * parallel.data_parallel_size
-        if numer % parallel.expert_model_parallel_size != 0:
+        etp = parallel.effective_expert_tensor_parallel_size
+        pp = parallel.pipeline_model_parallel_size
+        world = parallel.world_size
+        denom = etp * parallel.expert_model_parallel_size * pp
+        # EDP must be a clean integer (≥1) or a clean reciprocal (1/n) so each
+        # rank covers a whole number of expert slices / copies.
+        if denom == 0 or world == 0 or (world % denom != 0 and denom % world != 0):
             raise ValueError(
-                f"expert_model_parallel_size={parallel.expert_model_parallel_size} must divide "
-                f"cp*dp={numer} (Megatron requires expert_data_parallel_size = cp*dp/ep to be integer)"
+                f"world_size={world} and ETP*EP*PP={etp}*{parallel.expert_model_parallel_size}*{pp}={denom} must "
+                f"divide one another so EDP = world/(ETP*EP*PP) is either an integer (≥1) or a clean reciprocal (1/n)"
             )
+
+    if parallel.moe_folding and not model.moe.enabled:
+        raise ValueError("moe_folding can only be enabled for MoE models")
 
     if layout is not None:
         if len(layout) != pp:
@@ -111,6 +152,13 @@ def validate_workload(model: ModelConfig, parallel: ParallelConfig, workload: Wo
     if workload.seq_length < 1:
         raise ValueError("seq_length must be >= 1")
 
+    cp = parallel.context_parallel_size
+    if cp > 1 and workload.seq_length % (cp * 2) != 0:
+        raise ValueError(
+            f"seq_length={workload.seq_length} must be a multiple of 2*context_parallel_size={2 * cp} "
+            f"(context parallel splits each sequence into 2*CP balanced halves)"
+        )
+
     dp = parallel.data_parallel_size
     mbs = workload.micro_batch_size
     gbs = workload.global_batch_size
@@ -126,11 +174,19 @@ def validate_workload(model: ModelConfig, parallel: ParallelConfig, workload: Wo
             raise ValueError("recompute_granularity='full' requires recompute_method ('uniform' or 'block')")
         if workload.recompute_num_layers is None or workload.recompute_num_layers < 1:
             raise ValueError("recompute_granularity='full' requires recompute_num_layers >= 1")
-        if workload.recompute_num_layers > model.architecture.num_layers:
-            raise ValueError(
-                f"recompute_num_layers={workload.recompute_num_layers} must be <= "
-                f"num_layers={model.architecture.num_layers}"
-            )
+        # In ``block`` mode the multiplier per rank is ``num_chunks_per_rank``
+        # (= pp*vpp in direct mode, len(layout) in layout mode). ``uniform`` mode
+        # recomputes every layer regardless of recompute_num_layers.
+        if workload.recompute_method == "block":
+            per_chunk = workload.recompute_num_layers
+            chunks = num_chunks_per_rank(parallel)
+            layer_counts = layers_per_pp_stage(model, parallel)
+            max_rank_layers = max(layer_counts) if layer_counts else model.architecture.num_layers
+            if per_chunk * chunks > max_rank_layers:
+                raise ValueError(
+                    f"recompute_num_layers={per_chunk} * num_chunks_per_rank={chunks} = "
+                    f"{per_chunk * chunks} exceeds layers per PP rank = {max_rank_layers}"
+                )
 
 
 def validate_full_config(model: ModelConfig, parallel: ParallelConfig, workload: Workload) -> None:
@@ -144,6 +200,51 @@ def gradient_accumulation_steps(parallel: ParallelConfig, workload: Workload) ->
     if per_step <= 0 or workload.global_batch_size % per_step != 0:
         return 0
     return workload.global_batch_size // per_step
+
+
+def num_chunks_per_rank(parallel: ParallelConfig) -> int:
+    """Effective chunk count used as the multiplier for ``recompute_num_layers``.
+
+    - Direct (PP + VPP) mode: ``pp * vpp``
+    - Layout mode: ``len(layout)``
+
+    With ``recompute_method='block'``, ``recompute_num_layers`` applies once per
+    chunk, so the total recomputed layers attributed to one PP rank is
+    ``recompute_num_layers * num_chunks_per_rank``.
+    """
+    if parallel.pipeline_model_parallel_layout is not None:
+        return len(parallel.pipeline_model_parallel_layout)
+    vpp = parallel.virtual_pipeline_model_parallel_size or 1
+    return parallel.pipeline_model_parallel_size * vpp
+
+
+def total_recompute_layers_on_rank(
+    model: ModelConfig, parallel: ParallelConfig, workload: Workload, pp_rank: int
+) -> int:
+    """Per-PP-rank recomputed layer count, capped at this rank's layer count.
+
+    ``recompute_method='uniform'`` recomputes every layer (the layer count
+    on this rank).
+
+    ``recompute_method='block'`` recomputes ``recompute_num_layers`` per chunk,
+    where the chunk multiplier is :func:`num_chunks_per_rank`.
+    """
+    if workload.recompute_granularity != "full" or not workload.recompute_num_layers:
+        return 0
+    layer_counts = layers_per_pp_stage(model, parallel)
+    if not 0 <= pp_rank < len(layer_counts):
+        return 0
+    on_rank = layer_counts[pp_rank]
+    if workload.recompute_method == "uniform":
+        return on_rank
+    return min(on_rank, workload.recompute_num_layers * num_chunks_per_rank(parallel))
+
+
+def total_layers_on_rank(model: ModelConfig, parallel: ParallelConfig, pp_rank: int) -> int:
+    layer_counts = layers_per_pp_stage(model, parallel)
+    if not 0 <= pp_rank < len(layer_counts):
+        return 0
+    return layer_counts[pp_rank]
 
 
 def decompose_rank(global_rank: int, parallel: ParallelConfig) -> RankCoord:
@@ -182,8 +283,11 @@ def decompose_rank(global_rank: int, parallel: ParallelConfig) -> RankCoord:
     if ep <= 1 or parallel.expert_data_parallel_size <= 0:
         ep_r, edp_r = 0, 0
     else:
+        # Expert RankGenerator orders ``tp_e-cp(=1)-ep-edp-pp`` and uses
+        # ``tp_e = effective_expert_tensor_parallel_size`` (= TP when folding is off).
+        etp = parallel.effective_expert_tensor_parallel_size
         within_pp = global_rank - pp_r * (tp * cp * dp)
-        pos_after_tp = within_pp // tp
+        pos_after_tp = within_pp // max(1, etp)
         ep_r = pos_after_tp % ep
         edp_r = pos_after_tp // ep
     return RankCoord(tp=tp_r, cp=cp_r, dp=dp_r, pp=pp_r, ep=ep_r, expert_dp=edp_r)

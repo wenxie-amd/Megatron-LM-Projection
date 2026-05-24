@@ -99,12 +99,13 @@ class Trainer:
         raise NotImplementedError(f"optimizer_kind={self.parallel.optimizer_kind} is not modeled")
 
     def report(self) -> TrainerReport:
-        params_on_rank = self._params_on_rank()
+        dense_params, routed_params = self._params_on_rank_split()
         param_breakdown = self.transformer_model.param_breakdown()
+        total_param_bytes = model_param_bytes(dense_params + routed_params, self.parallel.precision)
         memory = MemoryBreakdown(
-            param_bytes=model_param_bytes(params_on_rank, self.parallel.precision),
+            param_bytes=total_param_bytes,
             activation_bytes=self._activation_bytes(),
-            optimizer=self.optimizer.memory_for(params_on_rank, self.parallel.precision),
+            optimizer=self.optimizer.memory_for_split(dense_params, routed_params, self.parallel.precision),
             precision=self.parallel.precision,
         )
         return TrainerReport(
@@ -116,19 +117,36 @@ class Trainer:
             memory=memory,
         )
 
-    def _params_on_rank(self) -> int:
-        """Parameters physically materialized on this rank.
+    def _params_on_rank_split(self) -> tuple[int, int]:
+        """``(dense_params, routed_expert_params)`` after TP / ETP (and DP for FSDP).
 
-        - PP sharding is already reflected in :class:`ModelPartition`.
-        - TP shards row/column-parallel weights uniformly; approximated as ``/ TP``.
-        - Under FSDP, params are additionally sharded across the DP group.
-        - Under distributed_optimizer, params stay replicated across DP.
+        - PP sharding is reflected in :class:`ModelPartition`.
+        - Dense params shard by TP (and additionally DP for FSDP).
+        - Routed expert params shard by ETP (already sharded by EP inside
+          :func:`TransformerModel.param_count_split`). When ``EDP < 1`` each
+          rank physically holds ``1/EDP`` expert slices, so we multiply by that
+          replication factor.
         """
-        total = self.transformer_model.param_count()
-        denom = self.parallel.tensor_model_parallel_size
+        dense, routed = self.transformer_model.param_count_split()
+        tp = self.parallel.tensor_model_parallel_size
+        etp = self.parallel.effective_expert_tensor_parallel_size
+        edp = self.parallel.expert_data_parallel_size  # float
+        routed_replication = max(1.0, 1.0 / edp) if edp > 0 else 1.0
+
+        dense_denom = tp
+        routed_denom = etp
         if self.parallel.optimizer_kind in (OptimizerKind.TORCH_FSDP2, OptimizerKind.MEGATRON_FSDP):
-            denom *= self.parallel.data_parallel_size
-        return total // denom
+            dense_denom *= self.parallel.data_parallel_size
+            # Under FSDP we approximate routed experts as DP-sharded too, but
+            # production FSDP+MoE setups are uncommon — flag in docs/UI.
+            routed_denom *= self.parallel.data_parallel_size
+        dense_on_rank = dense // max(1, dense_denom)
+        routed_on_rank = int((routed * routed_replication) // max(1, routed_denom))
+        return dense_on_rank, routed_on_rank
+
+    def _params_on_rank(self) -> int:
+        d, r = self._params_on_rank_split()
+        return d + r
 
     def _activation_bytes(self) -> int:
         ga = gradient_accumulation_steps(self.parallel, self.workload) or None
@@ -141,4 +159,6 @@ class Trainer:
             is_first_pp=self.partition.has_embedding,
             is_last_pp=self.partition.has_final_norm,
             num_microbatches=ga,
+            num_dense_layers_on_rank=self.transformer_model.block.num_dense_on_rank,
+            num_moe_layers_on_rank=self.transformer_model.block.num_moe_on_rank,
         )

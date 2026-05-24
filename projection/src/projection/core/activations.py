@@ -1,30 +1,29 @@
 """Per-rank activation memory model.
 
-Formulas are pulled from Megatron-LM's
-``megatron/training/theoretical_memory_usage.py`` (the canonical "compute
-expected memory before launch" implementation). Key facts mirrored here:
+PP / VPP / embedding / output handling follows Megatron-LM's
+``megatron/training/theoretical_memory_usage.py``. The per-layer formula goes
+beyond what Megatron's helper does so that **selective recompute reduces the
+estimate whether or not SP is on** (Megatron's helper bundles them):
 
-- **PP makes ranks unequal.** With non-interleaved 1F1B and ``num_microbatches``
-  in flight, the k-th PP stage (0-indexed) holds activations for
-  ``min(num_microbatches, pp_size - k)`` microbatches. Rank 0 is the worst.
-- **VPP adds a uniform penalty.** With ``vpp_size`` virtual stages,
-  the in-flight count per rank scales by
-  ``1 + (pp_size - 1) / (pp_size * vpp_size)`` (Megatron's
-  ``interleaved_schedule_memory_penalty``).
-- **First PP rank carries the embedding + dropout in-flight overhead** (one
-  copy per in-flight microbatch).
-- **Last PP rank carries the final norm + output projection + CE loss**.
-- **TP / SP / CP** scale the per-layer term.
+============== =============== ==========================================
+SP             selective       per-layer formula (bytes)
+============== =============== ==========================================
+off            off             ``sbh * (10 + 24/TP)``
+off            selective       ``sbh * (10 + 13/TP)`` (drops 11sbh/TP)
+on             off             ``sbh * 34 / TP``  (Korthikanti SP-only)
+on             selective       ``sbh * 18 + 4sb*ffn``, then ``/ TP``
+============== =============== ==========================================
 
-The per-layer base formula picks between Megatron's two variants:
+Full recomputation overrides chosen layers to ``2 * sbh`` (just the layer
+input); partial-full recomputation mixes the two.
 
-- SP + selective recompute: ``sbh * 18 + 4 * sb * ffn`` (Megatron's
-  ``compute_activation_memory``), then divided by TP at the end.
-- Otherwise:                 ``sbh * (10 + 24 / TP)`` (Megatron's
-  ``compute_activation_memory_without_sp``); no further TP division.
-
-Full recomputation overrides the chosen layers to ``2 * sbh`` (just the layer
-input stashed), partial-full recomputation mixes the two.
+- **PP makes ranks unequal**: with non-interleaved 1F1B and
+  ``num_microbatches`` in flight, the k-th PP stage holds activations for
+  ``min(num_microbatches, pp_size - k)`` microbatches.
+- **VPP** adds a uniform penalty
+  ``1 + (pp_size - 1) / (pp_size * vpp_size)``.
+- **First PP rank** carries embedding + dropout overhead;
+  **last PP rank** carries final norm + logits + CE loss.
 """
 
 from __future__ import annotations
@@ -33,6 +32,7 @@ import math
 
 from projection.configs import ModelConfig, ParallelConfig, Workload
 from projection.core.modules import padded_vocab_size
+from projection.parallel.ranks import num_chunks_per_rank
 
 
 def in_flight_microbatches(parallel: ParallelConfig, pp_rank: int, num_microbatches: int | None) -> int:
@@ -65,26 +65,6 @@ def interleaved_penalty(parallel: ParallelConfig) -> float:
     return 1.0 + (pp - 1.0) / (pp * vpp)
 
 
-def _per_layer_sp_selective(model: ModelConfig, workload: Workload, parallel: ParallelConfig) -> int:
-    """``sbh * 18 + 4 * sb * ffn``. Will be TP-divided at the end."""
-    s = workload.seq_length
-    b = workload.micro_batch_size
-    h = model.architecture.hidden_size
-    ffn = model.architecture.ffn_hidden_size
-    cp = parallel.context_parallel_size
-    return (18 * s * b * h + 4 * s * b * ffn) // max(1, cp)
-
-
-def _per_layer_without_sp(model: ModelConfig, workload: Workload, parallel: ParallelConfig) -> int:
-    """``sbh * (10 + 24 / t)``. TP factor already baked in."""
-    s = workload.seq_length
-    b = workload.micro_batch_size
-    h = model.architecture.hidden_size
-    t = parallel.tensor_model_parallel_size
-    cp = parallel.context_parallel_size
-    return ((10 * t + 24) * s * b * h) // (t * max(1, cp))
-
-
 def _per_layer_full_recompute(model: ModelConfig, workload: Workload, parallel: ParallelConfig) -> int:
     """``2 * sbh`` — just the layer input."""
     s = workload.seq_length
@@ -94,8 +74,28 @@ def _per_layer_full_recompute(model: ModelConfig, workload: Workload, parallel: 
     return (2 * s * b * h) // max(1, cp)
 
 
-def _use_sp_selective(workload: Workload, parallel: ParallelConfig) -> bool:
-    return parallel.sequence_parallel and workload.recompute_granularity == "selective"
+def _per_layer_normal(model: ModelConfig, workload: Workload, parallel: ParallelConfig) -> int:
+    """Per-layer activation bytes for granularity 'none' or 'selective'.
+
+    Covers all four combinations of {SP on/off} × {selective on/off}; see the
+    table in the module docstring.
+    """
+    s = workload.seq_length
+    b = workload.micro_batch_size
+    h = model.architecture.hidden_size
+    ffn = model.architecture.ffn_hidden_size
+    t = parallel.tensor_model_parallel_size
+    cp = max(1, parallel.context_parallel_size)
+    sp = parallel.sequence_parallel
+    selective = workload.recompute_granularity == "selective"
+
+    if sp and selective:
+        return (18 * s * b * h + 4 * s * b * ffn) // (t * cp)
+    if sp:
+        return (34 * s * b * h) // (t * cp)
+    if selective:
+        return ((10 * t + 13) * s * b * h) // (t * cp)
+    return ((10 * t + 24) * s * b * h) // (t * cp)
 
 
 def total_activation_bytes_for_rank(
@@ -108,50 +108,88 @@ def total_activation_bytes_for_rank(
     is_first_pp: bool,
     is_last_pp: bool,
     num_microbatches: int | None,
+    num_dense_layers_on_rank: int | None = None,
+    num_moe_layers_on_rank: int | None = None,
 ) -> int:
-    """Activation bytes for one PP rank, accounting for in-flight microbatches, embedding, and output."""
+    """Activation bytes for one PP rank.
+
+    When ``parallel.moe_folding`` is on and MoE layers are present, dense layers
+    use the attention strategy (TP, SP, CP) while MoE layers use the expert
+    strategy (ETP). Without folding (or no MoE), both share the same per-layer
+    formula. The split is driven by ``num_dense_layers_on_rank`` /
+    ``num_moe_layers_on_rank`` when provided; otherwise everything is treated
+    as a homogeneous block of ``num_layers_on_rank`` layers.
+    """
     in_flight = in_flight_microbatches(parallel, pp_rank, num_microbatches)
     s = workload.seq_length
     b = workload.micro_batch_size
     h = model.architecture.hidden_size
     t = parallel.tensor_model_parallel_size
 
-    use_sp = _use_sp_selective(workload, parallel)
-    normal_per_layer = (
-        _per_layer_sp_selective(model, workload, parallel)
-        if use_sp
-        else _per_layer_without_sp(model, workload, parallel)
+    folding_active = (
+        parallel.moe_folding
+        and model.moe.enabled
+        and num_moe_layers_on_rank
+        and num_dense_layers_on_rank is not None
+    )
+    if folding_active:
+        nd = num_dense_layers_on_rank or 0
+        nm = num_moe_layers_on_rank or 0
+    else:
+        nd = num_layers_on_rank
+        nm = 0
+
+    # Per-layer base bytes — dense uses the attention strategy (TP),
+    # MoE uses the expert strategy (ETP). When ETP == TP both are equal.
+    dense_per_layer = _per_layer_normal(model, workload, parallel)
+    moe_per_layer = (
+        _per_layer_normal(
+            model, workload, _parallel_swap_tp(parallel, parallel.effective_expert_tensor_parallel_size)
+        )
+        if folding_active
+        else dense_per_layer
     )
 
-    if workload.recompute_granularity == "full" and num_layers_on_rank > 0:
-        # Recompute knobs are global (``recompute_num_layers`` is across the whole
-        # model). Apportion the recomputed layers to this rank proportionally.
-        total_recomputed = workload.recompute_num_layers or model.architecture.num_layers
-        total_layers = max(1, model.architecture.num_layers)
-        local_recomputed = min(
-            num_layers_on_rank,
-            (total_recomputed * num_layers_on_rank + total_layers - 1) // total_layers,
-        )
-        local_kept = num_layers_on_rank - local_recomputed
-        full_per_layer = _per_layer_full_recompute(model, workload, parallel)
-        layer_bytes = local_recomputed * full_per_layer + local_kept * normal_per_layer
-    else:
-        layer_bytes = num_layers_on_rank * normal_per_layer
+    # SP+selective is the only path that needs a final /TP at the end (because
+    # the formula uses raw sbh × 18 + 4·sb·ffn without TP baked in).
+    final_tp_divide = parallel.sequence_parallel and workload.recompute_granularity == "selective"
 
+    def _layer_bytes(num_layers: int, per_layer: int) -> int:
+        if num_layers <= 0:
+            return 0
+        if workload.recompute_granularity == "full":
+            if workload.recompute_method == "uniform":
+                local_recomputed = num_layers
+            else:
+                per_chunk = workload.recompute_num_layers or 0
+                local_recomputed = min(num_layers, per_chunk * num_chunks_per_rank(parallel))
+            local_kept = num_layers - local_recomputed
+            full_per_layer = _per_layer_full_recompute(model, workload, parallel)
+            return local_recomputed * full_per_layer + local_kept * per_layer
+        return num_layers * per_layer
+
+    layer_bytes = _layer_bytes(nd, dense_per_layer) + _layer_bytes(nm, moe_per_layer)
     total = layer_bytes * in_flight
 
     if is_first_pp:
-        # Embedding-input + dropout: one copy per in-flight microbatch on rank 0.
         emb_per_mb = 8 * s * b + s * b * h
         total += emb_per_mb * in_flight
 
     if is_last_pp:
-        # Final norm output + logits + CE: one microbatch at peak on the last stage.
         vocab = padded_vocab_size(model.architecture, t)
         out_bytes = (4 * s * b * h + 4 * s * b * vocab) // t
         total += out_bytes
 
-    if use_sp:
+    if final_tp_divide:
         total = total // t
 
     return total
+
+
+def _parallel_swap_tp(parallel: ParallelConfig, new_tp: int) -> ParallelConfig:
+    """Return a shallow copy of ``parallel`` with ``tensor_model_parallel_size`` overridden.
+
+    Used so the MoE-side activation can reuse :func:`_per_layer_normal` with the
+    expert TP value, without restructuring the formula.
+    """
+    return parallel.model_copy(update={"tensor_model_parallel_size": max(1, new_tp)})

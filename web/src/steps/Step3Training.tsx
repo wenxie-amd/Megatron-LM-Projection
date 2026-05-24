@@ -1,7 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { InfoIcon } from "../components/ExplanationPanel";
 import { CheckboxField, NumberField, SelectField, TextField } from "../components/Field";
+import { getBridge } from "../pyodide/bridge";
 import { useProjection } from "../state/context";
 import {
   OPTIMIZER_DTYPES,
@@ -9,6 +10,7 @@ import {
   PRECISIONS,
   clientValidate,
   deriveView,
+  formatEdp,
   parseLayoutList,
 } from "../state/store";
 import type { OptimizerDtype, Precision, Workload } from "../pyodide/types";
@@ -66,19 +68,30 @@ export function Step3Training() {
         <div className="derived-grid">
           <Derived label="World size" value={derived.world_size} hint="from Step 2 (number of GPUs)" />
           <Derived
-            label="DP (data_parallel_size)"
+            label={parallel.moe_folding ? "ADP (attention DP)" : "DP"}
             value={derived.data_parallel_size || "—"}
             hint="world_size / (TP × PP × CP)"
           />
           {isMoE && (
             <Derived
-              label="EDP (expert_data_parallel_size)"
-              value={derived.expert_data_parallel_size || "—"}
-              hint="DP / EP"
+              label="EDP (expert DP)"
+              value={formatEdp(derived.expert_data_parallel_size)}
+              hint={
+                derived.expert_data_parallel_size > 0 && derived.expert_data_parallel_size < 1
+                  ? "world / (ETP × EP × PP); < 1 means each rank holds 1/EDP expert slices, optimizer state is not further sharded"
+                  : "world / (ETP × EP × PP)"
+              }
+            />
+          )}
+          {isMoE && parallel.moe_folding && (
+            <Derived
+              label="ETP (expert TP)"
+              value={derived.expert_tensor_parallel_size}
+              hint="from MoE column (defaults to TP)"
             />
           )}
           <Derived
-            label="GA (gradient_accumulation_steps)"
+            label="GA"
             value={derived.gradient_accumulation_steps || "—"}
             hint="gbs / (DP × mbs)"
           />
@@ -97,54 +110,148 @@ export function Step3Training() {
                   Rank ordering is Megatron's default <code>tp-cp-ep-dp-pp</code>, so rank 0 holds
                   (tp=0, cp=0, ep=0, dp=0, pp=0).
                 </p>
-                <p>DP is derived from world_size and the other parallel sizes, not user-set.</p>
+                <p>DP and EDP are derived from world_size and the other parallel sizes.</p>
+                <p>
+                  <b>MoE folding</b> lets attention and MoE use independent strategies
+                  (attention: TP/CP/ADP; MoE: ETP/EP/EDP). PP is shared. Megatron implements this
+                  via a <code>ChainedOptimizer</code> with separate dense / expert sub-optimizers.
+                </p>
               </>
             }
           />
         </legend>
-        <SelectField
-          label="Precision"
-          value={parallel.precision}
-          options={PRECISIONS.map((p) => ({ value: p, label: p.toUpperCase() }))}
-          onChange={(v: Precision) => dispatch({ type: "SET_PARALLEL", patch: { precision: v } })}
-        />
         <div className="grid">
-          <NumberField
-            label="TP (tensor_model_parallel_size)"
-            value={parallel.tensor_model_parallel_size}
-            min={1}
-            onChange={(v) => dispatch({ type: "SET_PARALLEL", patch: { tensor_model_parallel_size: Math.max(1, v) } })}
-          />
-          <CheckboxField
-            label="Sequence parallel"
-            checked={parallel.sequence_parallel}
-            onChange={(v) => dispatch({ type: "SET_PARALLEL", patch: { sequence_parallel: v } })}
-            disabled={parallel.tensor_model_parallel_size === 1}
+          <SelectField
+            label="Precision"
+            value={parallel.precision}
+            options={PRECISIONS.map((p) => ({ value: p, label: p.toUpperCase() }))}
+            onChange={(v: Precision) => dispatch({ type: "SET_PARALLEL", patch: { precision: v } })}
           />
           <NumberField
-            label="CP (context_parallel_size)"
-            value={parallel.context_parallel_size}
-            min={1}
-            onChange={(v) => dispatch({ type: "SET_PARALLEL", patch: { context_parallel_size: Math.max(1, v) } })}
-          />
-          {isMoE && (
-            <NumberField
-              label="EP (expert_model_parallel_size)"
-              value={parallel.expert_model_parallel_size}
-              min={1}
-              onChange={(v) =>
-                dispatch({ type: "SET_PARALLEL", patch: { expert_model_parallel_size: Math.max(1, v) } })
-              }
-              hint="Routed experts split across this group"
-            />
-          )}
-          <NumberField
-            label="PP (pipeline_model_parallel_size)"
+            label="PP (pipeline_model_parallel_size, shared)"
             value={parallel.pipeline_model_parallel_size}
             min={1}
-            onChange={(v) => dispatch({ type: "SET_PARALLEL", patch: { pipeline_model_parallel_size: Math.max(1, v) } })}
+            onChange={(v) =>
+              dispatch({ type: "SET_PARALLEL", patch: { pipeline_model_parallel_size: Math.max(1, v) } })
+            }
           />
+          {isMoE && (
+            <CheckboxField
+              label="MoE folding"
+              checked={!!parallel.moe_folding}
+              onChange={(v) => dispatch({ type: "SET_PARALLEL", patch: { moe_folding: v } })}
+              hint="Independent strategies for attention and MoE (Megatron ChainedOptimizer)"
+            />
+          )}
         </div>
+
+        {isMoE && parallel.moe_folding ? (
+          <div className="folded-strategy">
+            <div className="folded-side">
+              <h4>Attention side</h4>
+              <div className="grid">
+                <NumberField
+                  label="TP (tensor_model_parallel_size)"
+                  value={parallel.tensor_model_parallel_size}
+                  min={1}
+                  onChange={(v) =>
+                    dispatch({ type: "SET_PARALLEL", patch: { tensor_model_parallel_size: Math.max(1, v) } })
+                  }
+                />
+                <CheckboxField
+                  label="Sequence parallel"
+                  checked={parallel.sequence_parallel}
+                  onChange={(v) => dispatch({ type: "SET_PARALLEL", patch: { sequence_parallel: v } })}
+                  disabled={parallel.tensor_model_parallel_size === 1}
+                />
+                <NumberField
+                  label="CP (context_parallel_size)"
+                  value={parallel.context_parallel_size}
+                  min={1}
+                  onChange={(v) =>
+                    dispatch({ type: "SET_PARALLEL", patch: { context_parallel_size: Math.max(1, v) } })
+                  }
+                />
+                <div className="derived-cell inline">
+                  <div className="derived-label">ADP (attention DP)</div>
+                  <div className="derived-value">{derived.data_parallel_size || "—"}</div>
+                  <div className="derived-hint">world / (TP × CP × PP)</div>
+                </div>
+              </div>
+            </div>
+            <div className="folded-side">
+              <h4>MoE side</h4>
+              <div className="grid">
+                <NumberField
+                  label="ETP (expert_tensor_parallel_size)"
+                  value={parallel.expert_tensor_parallel_size ?? parallel.tensor_model_parallel_size}
+                  min={1}
+                  onChange={(v) =>
+                    dispatch({
+                      type: "SET_PARALLEL",
+                      patch: { expert_tensor_parallel_size: Math.max(1, v) },
+                    })
+                  }
+                  hint="Independent TP for routed experts"
+                />
+                <NumberField
+                  label="EP (expert_model_parallel_size)"
+                  value={parallel.expert_model_parallel_size}
+                  min={1}
+                  onChange={(v) =>
+                    dispatch({ type: "SET_PARALLEL", patch: { expert_model_parallel_size: Math.max(1, v) } })
+                  }
+                />
+                <div className="derived-cell inline">
+                  <div className="derived-label">EDP (expert DP)</div>
+                  <div className="derived-value">{formatEdp(derived.expert_data_parallel_size)}</div>
+                  <div className="derived-hint">
+                    world / (ETP × EP × PP){" "}
+                    {derived.expert_data_parallel_size > 0 && derived.expert_data_parallel_size < 1
+                      ? `· 1/EDP=${Math.round(1 / derived.expert_data_parallel_size)} expert slices per rank, no DP shard for routed`
+                      : ""}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="grid">
+            <NumberField
+              label="TP (tensor_model_parallel_size)"
+              value={parallel.tensor_model_parallel_size}
+              min={1}
+              onChange={(v) =>
+                dispatch({ type: "SET_PARALLEL", patch: { tensor_model_parallel_size: Math.max(1, v) } })
+              }
+            />
+            <CheckboxField
+              label="Sequence parallel"
+              checked={parallel.sequence_parallel}
+              onChange={(v) => dispatch({ type: "SET_PARALLEL", patch: { sequence_parallel: v } })}
+              disabled={parallel.tensor_model_parallel_size === 1}
+            />
+            <NumberField
+              label="CP (context_parallel_size)"
+              value={parallel.context_parallel_size}
+              min={1}
+              onChange={(v) =>
+                dispatch({ type: "SET_PARALLEL", patch: { context_parallel_size: Math.max(1, v) } })
+              }
+            />
+            {isMoE && (
+              <NumberField
+                label="EP (expert_model_parallel_size)"
+                value={parallel.expert_model_parallel_size}
+                min={1}
+                onChange={(v) =>
+                  dispatch({ type: "SET_PARALLEL", patch: { expert_model_parallel_size: Math.max(1, v) } })
+                }
+                hint="Routed experts split across this group"
+              />
+            )}
+          </div>
+        )}
 
         <div className="pp-mode">
           <span className="field-label">Pipeline mode</span>
@@ -280,21 +387,24 @@ export function Step3Training() {
               { value: "selective", label: "selective" },
               { value: "full", label: "full" },
             ]}
-            onChange={(v) =>
-              dispatch({
-                type: "SET_WORKLOAD",
-                patch: { recompute_granularity: v as Workload["recompute_granularity"] },
-              })
-            }
+            onChange={(v) => {
+              const granularity = v as Workload["recompute_granularity"];
+              const patch: Partial<Workload> = { recompute_granularity: granularity };
+              if (granularity === "full" && !workload.recompute_method) {
+                patch.recompute_method = "block";
+                if (!workload.recompute_num_layers) patch.recompute_num_layers = 1;
+              }
+              dispatch({ type: "SET_WORKLOAD", patch });
+            }}
           />
           {workload.recompute_granularity === "full" && (
             <>
               <SelectField
                 label="recompute_method"
-                value={workload.recompute_method ?? "uniform"}
+                value={workload.recompute_method ?? "block"}
                 options={[
-                  { value: "uniform", label: "uniform" },
                   { value: "block", label: "block" },
+                  { value: "uniform", label: "uniform" },
                 ]}
                 onChange={(v) =>
                   dispatch({
@@ -304,17 +414,22 @@ export function Step3Training() {
                 }
               />
               <NumberField
-                label="recompute_num_layers"
+                label="recompute_num_layers (per model chunk)"
                 value={workload.recompute_num_layers ?? 1}
                 min={1}
-                max={numLayers ?? undefined}
                 onChange={(v) =>
                   dispatch({ type: "SET_WORKLOAD", patch: { recompute_num_layers: Math.max(1, v) } })
+                }
+                hint={
+                  workload.recompute_method === "uniform"
+                    ? "uniform method: every layer is recomputed (recompute_num_layers is the unit size)."
+                    : "block method: per chunk. Total per rank = recompute_num_layers × num_chunks_per_rank (= pp×vpp for direct, len(layout) for layout mode)."
                 }
               />
             </>
           )}
         </div>
+        {workload.recompute_granularity === "full" && <PerRankRecomputeView />}
       </fieldset>
 
       <fieldset>
@@ -348,5 +463,77 @@ function DtypeField({ label, value, onChange }: DtypeFieldProps) {
       options={OPTIMIZER_DTYPES.map((d) => ({ value: d, label: d }))}
       onChange={(v) => onChange(v as OptimizerDtype)}
     />
+  );
+}
+
+function PerRankRecomputeView() {
+  const { state } = useProjection();
+  const [ppRank, setPpRank] = useState(0);
+  const [info, setInfo] = useState<{ total_num_layers: number; total_recompute_num_layers: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const pp = state.parallel.pipeline_model_parallel_size;
+  const ppRankClamped = Math.min(Math.max(0, ppRank), pp - 1);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!state.modelConfig) return;
+    (async () => {
+      try {
+        const bridge = await getBridge();
+        const result = bridge.computePerRankLayers({
+          model: state.selectedModel ?? (state.modelConfig as unknown as Record<string, unknown>),
+          parallel: state.parallel as unknown as Record<string, unknown>,
+          workload: state.workload as unknown as Record<string, unknown>,
+          pp_rank: ppRankClamped,
+        });
+        if (!cancelled) {
+          setInfo(result);
+          setErr(null);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setErr(e instanceof Error ? e.message : String(e));
+          setInfo(null);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [state.modelConfig, state.selectedModel, state.parallel, state.workload, ppRankClamped]);
+
+  return (
+    <div className="per-rank-recompute">
+      <label className="field per-rank-pp-select">
+        <span className="field-label">Inspect PP rank</span>
+        <select value={ppRankClamped} onChange={(e) => setPpRank(Number(e.target.value))}>
+          {Array.from({ length: Math.max(1, pp) }, (_, i) => (
+            <option key={i} value={i}>
+              rank {i}
+            </option>
+          ))}
+        </select>
+      </label>
+      {err && <p className="error">{err}</p>}
+      {info && (
+        <div className="derived-grid compact">
+          <div className="derived-cell">
+            <div className="derived-label">total_num_layers (PP rank {ppRankClamped})</div>
+            <div className="derived-value">{info.total_num_layers}</div>
+            <div className="derived-hint">layers physically owned by this PP stage</div>
+          </div>
+          <div className="derived-cell">
+            <div className="derived-label">total_recompute_num_layers (PP rank {ppRankClamped})</div>
+            <div className="derived-value">{info.total_recompute_num_layers}</div>
+            <div className="derived-hint">
+              {state.workload.recompute_method === "uniform"
+                ? "uniform: all layers on this rank"
+                : "block: recompute_num_layers × num_chunks_per_rank, capped"}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

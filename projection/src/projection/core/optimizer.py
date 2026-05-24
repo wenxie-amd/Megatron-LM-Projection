@@ -80,7 +80,23 @@ class DistributedOptimizer:
         return FP32_BYTES if self._accumulate_grads_in_fp32 else precision.bytes
 
     def memory_for(self, params_on_rank: int, precision: Precision) -> OptimizerMemory:
+        return self.memory_for_split(params_on_rank, 0, precision)
+
+    def memory_for_split(
+        self, dense_params_on_rank: int, routed_params_on_rank: int, precision: Precision
+    ) -> OptimizerMemory:
+        """Chained optimizer: dense uses ADP, routed-experts use EDP.
+
+        Matches Megatron's ``ChainedOptimizer`` setup with separate expert /
+        non-expert param groups — dense main_param + Adam state shard by ADP;
+        routed-expert main_param + Adam state shard by EDP. When ``EDP < 1``
+        (each rank holds ``1/EDP`` expert slices) the routed-expert optimizer
+        state is *not* further sharded: ``max(1, EDP)`` is the effective shard
+        divisor.
+        """
         dp = self._parallel.data_parallel_size
+        edp_raw = self._parallel.expert_data_parallel_size  # float (may be < 1)
+        edp_effective = max(1.0, edp_raw) if edp_raw > 0 else max(1.0, float(dp))
         if self._parallel.use_precision_aware_optimizer:
             master_bytes_per = _dtype_bytes(self._parallel.optimizer_main_param_dtype)
             m_bytes_per = _dtype_bytes(self._parallel.optimizer_exp_avg_dtype)
@@ -88,16 +104,21 @@ class DistributedOptimizer:
         else:
             master_bytes_per = m_bytes_per = v_bytes_per = FP32_BYTES
 
-        # The grad buffer is full-numel on every DP rank — not sharded — because
-        # backward writes into it before reduce-scatter.
-        grad_bytes = params_on_rank * self.grad_dtype_bytes(precision)
-        # Master params + Adam state ARE sharded across DP.
-        main_param_bytes = (params_on_rank * master_bytes_per) // dp
-        state_bytes = (params_on_rank * (m_bytes_per + v_bytes_per)) // dp
+        # Grad buffer is full-numel on every DP rank (and full on every EDP
+        # rank for the expert sub-buffer): not sharded.
+        grad_bytes_per = self.grad_dtype_bytes(precision)
+        grad_bytes = (dense_params_on_rank + routed_params_on_rank) * grad_bytes_per
+
+        adam_bytes = m_bytes_per + v_bytes_per
+        dense_main = (dense_params_on_rank * master_bytes_per) // max(1, dp)
+        dense_state = (dense_params_on_rank * adam_bytes) // max(1, dp)
+        routed_main = int((routed_params_on_rank * master_bytes_per) // edp_effective)
+        routed_state = int((routed_params_on_rank * adam_bytes) // edp_effective)
+
         return OptimizerMemory(
             grad_buffer_bytes=grad_bytes,
-            main_param_bytes=main_param_bytes,
-            state_bytes=state_bytes,
+            main_param_bytes=dense_main + routed_main,
+            state_bytes=dense_state + routed_state,
         )
 
 
@@ -118,16 +139,18 @@ class FSDPOptimizer:
         self._parallel = parallel
 
     def memory_for(self, params_on_rank: int, precision: Precision) -> OptimizerMemory:
-        # Under FSDP, grads, master and Adam states are all DP-sharded; the
-        # local shard already lives in ``params_on_rank`` (see Trainer).
-        grad_bytes = params_on_rank * FP32_BYTES
-        main_param_bytes = params_on_rank * FP32_BYTES
-        state_bytes = params_on_rank * (FP32_BYTES + FP32_BYTES)
+        return self.memory_for_split(params_on_rank, 0, precision)
+
+    def memory_for_split(
+        self, dense_params_on_rank: int, routed_params_on_rank: int, precision: Precision
+    ) -> OptimizerMemory:
+        """FSDP: every tensor lives only as a local DP shard (already accounted for in caller)."""
         _ = precision
+        total = dense_params_on_rank + routed_params_on_rank
         return OptimizerMemory(
-            grad_buffer_bytes=grad_bytes,
-            main_param_bytes=main_param_bytes,
-            state_bytes=state_bytes,
+            grad_buffer_bytes=total * FP32_BYTES,
+            main_param_bytes=total * FP32_BYTES,
+            state_bytes=total * (FP32_BYTES + FP32_BYTES),
         )
 
 

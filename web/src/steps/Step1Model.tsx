@@ -169,7 +169,7 @@ export function Step1Model() {
               <h3>
                 {breakdown.ffn_breakdown.kind === "moe"
                   ? "Inside one MoE block"
-                  : "Inside one MLP block"}
+                  : `Inside one MLP block${config.mlp.swiglu ? " (SwiGLU)" : ""}`}
               </h3>
               <ParamPie data={breakdown.ffn_breakdown.entries} />
             </div>
