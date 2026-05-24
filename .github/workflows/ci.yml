@@ -50,10 +50,13 @@ jobs:
       - name: Install web dependencies
         working-directory: web
         run: npm ci
+      - name: Build projection wheel
+        working-directory: web
+        run: npm run build:wheel
       - name: Vitest
         working-directory: web
         run: npm test
-      - name: Build (rebuilds wheel)
+      - name: Build (full)
         working-directory: web
         run: npm run build
         env:
