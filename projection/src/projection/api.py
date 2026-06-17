@@ -26,6 +26,7 @@ from projection.loader import (
 )
 from projection.parallel.ranks import (
     gradient_accumulation_steps,
+    num_chunks_per_rank,
     total_layers_on_rank,
     total_recompute_layers_on_rank,
 )
@@ -229,6 +230,7 @@ def compute_per_rank_layers(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "pp_rank": pp_rank,
         "total_num_layers": total_layers_on_rank(model_config, parallel, pp_rank),
+        "num_chunks_per_rank": num_chunks_per_rank(parallel),
         "total_recompute_num_layers": total_recompute_layers_on_rank(
             model_config, parallel, workload, pp_rank
         ),

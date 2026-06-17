@@ -199,19 +199,22 @@ def gradient_accumulation_steps(parallel: ParallelConfig, workload: Workload) ->
 
 
 def num_chunks_per_rank(parallel: ParallelConfig) -> int:
-    """Effective chunk count used as the multiplier for ``recompute_num_layers``.
+    """Number of model chunks a single PP rank owns (== ``vpp``).
 
-    - Direct (PP + VPP) mode: ``pp * vpp``
-    - Layout mode: ``len(layout)``
-
-    With ``recompute_method='block'``, ``recompute_num_layers`` applies once per
-    chunk, so the total recomputed layers attributed to one PP rank is
+    Each ``TransformerBlock`` in Megatron is one virtual chunk, and a PP rank
+    holds ``vpp`` of them. With ``recompute_method='block'``,
+    ``recompute_num_layers`` is recomputed *per chunk*, so the total recomputed
+    layers attributed to one PP rank is
     ``recompute_num_layers * num_chunks_per_rank``.
+
+    - Direct (PP + VPP) mode: ``vpp``.
+    - Layout mode: ``len(layout) // pp`` — the layout lists all ``pp * vpp``
+      chunks globally and each PP rank owns ``vpp`` consecutive ones.
     """
+    pp = parallel.pipeline_model_parallel_size
     if parallel.pipeline_model_parallel_layout is not None:
-        return len(parallel.pipeline_model_parallel_layout)
-    vpp = parallel.virtual_pipeline_model_parallel_size or 1
-    return parallel.pipeline_model_parallel_size * vpp
+        return max(1, len(parallel.pipeline_model_parallel_layout) // max(1, pp))
+    return parallel.virtual_pipeline_model_parallel_size or 1
 
 
 def total_recompute_layers_on_rank(

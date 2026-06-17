@@ -128,7 +128,12 @@ export class Bridge {
     parallel: Record<string, unknown>;
     workload: Record<string, unknown>;
     pp_rank: number;
-  }): { pp_rank: number; total_num_layers: number; total_recompute_num_layers: number } {
+  }): {
+    pp_rank: number;
+    total_num_layers: number;
+    num_chunks_per_rank: number;
+    total_recompute_num_layers: number;
+  } {
     return this.callPyFunction("compute_per_rank_layers", [input]);
   }
 

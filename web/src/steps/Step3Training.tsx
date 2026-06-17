@@ -462,7 +462,7 @@ export function Step3Training() {
                 hint={
                   workload.recompute_method === "uniform"
                     ? "uniform method: every layer is recomputed (recompute_num_layers is the unit size)."
-                    : "block method: per chunk. Total per rank = recompute_num_layers × num_chunks_per_rank (= pp×vpp for direct, len(layout) for layout mode)."
+                    : "block method: per chunk. Total per rank = recompute_num_layers × num_chunks_per_rank (= vpp; each PP rank owns vpp model chunks)."
                 }
               />
             </>
@@ -508,7 +508,11 @@ function DtypeField({ label, value, onChange }: DtypeFieldProps) {
 function PerRankRecomputeView() {
   const { state } = useProjection();
   const [ppRank, setPpRank] = useState(0);
-  const [info, setInfo] = useState<{ total_num_layers: number; total_recompute_num_layers: number } | null>(null);
+  const [info, setInfo] = useState<{
+    total_num_layers: number;
+    num_chunks_per_rank: number;
+    total_recompute_num_layers: number;
+  } | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const pp = state.parallel.pipeline_model_parallel_size;
@@ -561,6 +565,13 @@ function PerRankRecomputeView() {
             <div className="derived-label">total_num_layers (PP rank {ppRankClamped})</div>
             <div className="derived-value">{info.total_num_layers}</div>
             <div className="derived-hint">layers physically owned by this PP stage</div>
+          </div>
+          <div className="derived-cell">
+            <div className="derived-label">num_chunks_per_rank</div>
+            <div className="derived-value">{info.num_chunks_per_rank}</div>
+            <div className="derived-hint">
+              model chunks (= vpp) this PP rank owns; recompute_num_layers applies per chunk
+            </div>
           </div>
           <div className="derived-cell">
             <div className="derived-label">total_recompute_num_layers (PP rank {ppRankClamped})</div>

@@ -73,46 +73,75 @@ def test_parallel_dims_must_be_positive() -> None:
         ParallelConfig(tensor_model_parallel_size=0)
 
 
-def test_recompute_block_overflow_is_silently_clamped() -> None:
-    """``block`` mode: when ``recompute_num_layers * num_chunks_per_rank``
-    exceeds the layer count on a rank, validation passes and the activation
-    accounting clamps to "recompute every layer on this rank" (same as
-    ``method=uniform``)."""
-    model = load_model_config("meta-llama/Llama-3.1-8B")
-    parallel = ParallelConfig(pipeline_model_parallel_size=4)
-    # num_chunks_per_rank = pp*vpp = 4. recompute_num_layers=4 → 4*4=16 > 8/rank.
-    too_big = Workload(
-        seq_length=1024,
-        micro_batch_size=1,
-        global_batch_size=64,
-        recompute_granularity="full",
-        recompute_method="block",
-        recompute_num_layers=4,
-    )
-    validate_workload(model, parallel, too_big)  # must not raise
+def test_num_chunks_per_rank_equals_vpp() -> None:
+    """``num_chunks_per_rank`` is the chunk count a single PP rank owns (== vpp),
+    NOT the global ``pp * vpp`` chunk count. Each Megatron ``TransformerBlock``
+    is one virtual chunk and a PP rank holds ``vpp`` of them."""
+    from projection.parallel.ranks import num_chunks_per_rank
 
-    # And the clamped per-rank recomputed-layer count never exceeds the rank's
-    # layer count.
+    # No VPP → 1 chunk per rank.
+    assert num_chunks_per_rank(ParallelConfig(pipeline_model_parallel_size=4)) == 1
+    # VPP=2 → 2 chunks per rank regardless of PP size.
+    assert (
+        num_chunks_per_rank(
+            ParallelConfig(pipeline_model_parallel_size=4, virtual_pipeline_model_parallel_size=2)
+        )
+        == 2
+    )
+    # Layout mode lists all pp*vpp chunks globally; per-rank count is len/pp.
+    assert (
+        num_chunks_per_rank(
+            ParallelConfig(
+                pipeline_model_parallel_size=4,
+                virtual_pipeline_model_parallel_size=2,
+                pipeline_model_parallel_layout=[4, 4, 4, 4, 4, 4, 4, 4],  # 8 chunks, pp=4 → vpp=2
+            )
+        )
+        == 2
+    )
+
+
+def test_recompute_block_per_rank_is_recompute_times_vpp() -> None:
+    """``block`` mode: per-rank recomputed layers = recompute_num_layers × vpp
+    (chunks the rank owns), capped at the rank's layer count."""
     from projection.parallel.ranks import total_recompute_layers_on_rank
 
-    for pp_rank in range(parallel.pipeline_model_parallel_size):
-        recomputed = total_recompute_layers_on_rank(model, parallel, too_big, pp_rank)
-        assert recomputed <= 8 // 4 + (1 if pp_rank < 8 % 4 else 0) or recomputed <= 8
-
-
-def test_recompute_block_with_vpp_overflow_is_silently_clamped() -> None:
-    """VPP variant — num_chunks_per_rank=pp*vpp=8, recompute=2 → 16 > 8."""
-    model = load_model_config("meta-llama/Llama-3.1-8B")
+    model = load_model_config("meta-llama/Llama-3.1-8B")  # 32 layers
+    # pp=4 (8 layers/rank), vpp=2 (4 layers/chunk), recompute_num_layers=1
+    # → per rank = 1 × 2 = 2 (NOT 1 × pp×vpp = 8).
     parallel = ParallelConfig(pipeline_model_parallel_size=4, virtual_pipeline_model_parallel_size=2)
+    wl = Workload(
+        seq_length=1024,
+        micro_batch_size=1,
+        global_batch_size=64,
+        recompute_granularity="full",
+        recompute_method="block",
+        recompute_num_layers=1,
+    )
+    for pp_rank in range(parallel.pipeline_model_parallel_size):
+        assert total_recompute_layers_on_rank(model, parallel, wl, pp_rank) == 2
+
+
+def test_recompute_block_overflow_is_silently_clamped() -> None:
+    """When ``recompute_num_layers × vpp`` exceeds the rank's layer count,
+    validation passes and the per-rank count clamps to the rank's layer count
+    (same effect as ``method=uniform``)."""
+    from projection.parallel.ranks import total_recompute_layers_on_rank
+
+    model = load_model_config("meta-llama/Llama-3.1-8B")  # 32 layers
+    # pp=4 → 8 layers/rank, vpp=1. recompute_num_layers=10 → 10×1=10 > 8 → clamp 8.
+    parallel = ParallelConfig(pipeline_model_parallel_size=4)
     too_big = Workload(
         seq_length=1024,
         micro_batch_size=1,
         global_batch_size=64,
         recompute_granularity="full",
         recompute_method="block",
-        recompute_num_layers=2,
+        recompute_num_layers=10,
     )
     validate_workload(model, parallel, too_big)  # must not raise
+    for pp_rank in range(parallel.pipeline_model_parallel_size):
+        assert total_recompute_layers_on_rank(model, parallel, too_big, pp_rank) == 8
 
 
 def test_tp_must_divide_num_query_groups_gqa() -> None:
