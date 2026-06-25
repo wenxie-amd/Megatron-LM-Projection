@@ -1,9 +1,9 @@
 name: custom/DeepSeek-MoE-400B
 description: >-
-  Custom DeepSeek-MoE-400B (402B total / ~34B activated). DeepSeek-V3-style
-  MoE + MLA, 3 dense layers then MoE. 64 layers, hidden 6144, 168 routed +
-  1 shared experts, top-8 routing. Not an official release — a scaled-down
-  DeepSeek-V3 for projection experiments.
+  Custom DeepSeek-MoE-400B (458B total / ~36B activated). DeepSeek-V3-style
+  MoE + MLA, 3 dense layers then MoE. 64 layers, hidden 6144, 192 routed
+  (= 6×32, divisible by 32 for EP) + 1 shared experts, top-8 routing. Not an
+  official release — a scaled-down DeepSeek-V3 for projection experiments.
 
 architecture:
   num_layers: 64
@@ -33,7 +33,7 @@ mlp:
 moe:
   enabled: true
   moe_ffn_hidden_size: 2048
-  num_routed_experts: 168
+  num_routed_experts: 192
   num_shared_experts: 1
   moe_router_topk: 8
   moe_layer_freq: 1
